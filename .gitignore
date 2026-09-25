@@ -1,0 +1,6 @@
+build/
+Generated/
+DartsCaller.xcodeproj/
+*.ipa
+Training/datasets/
+Training/runs/

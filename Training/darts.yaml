@@ -1,0 +1,15 @@
+# YOLO-dataset voor DartsCaller — zelfde klassen als het meegeleverde model (Dart Sense),
+# zodat je dat model kunt verder trainen op je eigen foto's. Volgorde NIET wijzigen.
+#   "20" = buitenrand double-ring op draad 5|20   "3" = 17|3   "11" = 8|11   "6" = 13|6
+#   "9"  = 14|9 (optioneel)                        "15" = 10|15 (optioneel)
+path: datasets/darts
+train: images/train
+val: images/val
+names:
+  0: '20'
+  1: '3'
+  2: '11'
+  3: '6'
+  4: dart
+  5: '9'
+  6: '15'
