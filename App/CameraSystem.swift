@@ -130,6 +130,12 @@ final class CameraSystem {
         return true
     }
 
+    /// Knop in de setup: lege bord nu vastleggen (als het automatisch niet lukt).
+    func captureBaselineNow() {
+        guard step == .waitingForBaseline else { return }
+        pipeline.forceBaseline()
+    }
+
     // MARK: - Intern
 
     private func startSearching() {

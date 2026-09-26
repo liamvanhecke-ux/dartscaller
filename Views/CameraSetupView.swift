@@ -63,8 +63,8 @@ struct CameraSetupView: View {
             case .calibrating:
                 CalibrationView()
             case .waitingForBaseline:
-                live(status: "Haal alle pijlen uit het bord en ga uit beeld. Het lege bord wordt vastgelegd…", busy: true) {
-                    EmptyView()
+                live(status: "Zet de iPhone stil (statief), haal alle pijlen uit het bord en ga uit beeld. Het lege bord wordt vastgelegd…", busy: true) {
+                    BaselineFallbackButton { camera.captureBaselineNow() }
                 }
             case .ready:
                 live(status: "Klaar!", busy: false) { EmptyView() }
@@ -124,6 +124,30 @@ struct CameraSetupView: View {
             .background(.ultraThinMaterial.opacity(0.9), in: RoundedRectangle(cornerRadius: 20, style: .continuous))
             .environment(\.colorScheme, .dark)
             .padding()
+        }
+    }
+}
+
+/// Verschijnt na 4 seconden: lukt het automatisch niet, dan kan de gebruiker zelf vastleggen.
+private struct BaselineFallbackButton: View {
+    let action: () -> Void
+    @State private var visible = false
+
+    var body: some View {
+        Group {
+            if visible {
+                VStack(spacing: 6) {
+                    Button("Leeg bord nu vastleggen", action: action)
+                        .buttonStyle(.borderedProminent)
+                    Text("Lukt het niet? Staat de iPhone echt stil en is er niemand in beeld?")
+                        .font(.caption2).foregroundStyle(.white.opacity(0.7))
+                        .multilineTextAlignment(.center)
+                }
+            }
+        }
+        .task {
+            try? await Task.sleep(for: .seconds(4))
+            withAnimation { visible = true }
         }
     }
 }

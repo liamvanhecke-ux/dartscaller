@@ -1,4 +1,7 @@
 import XCTest
+#if canImport(FoundationXML)
+import FoundationXML
+#endif
 #if canImport(CoreGraphics)
 import CoreGraphics
 #endif
@@ -355,6 +358,31 @@ final class ThrowTrackerTests: XCTestCase {
         return t
     }
 
+    func testBaselineToleratesLightFlickerButNotShaking() {
+        let t = ThrowTracker()
+        var flicker = [GrayImage]()
+        for i in 0..<30 {                         // een paar pixels flikkeren (licht, blaadjes)
+            var img = empty
+            for k in 0..<10 { img.pixels[(i * 37 + k * 911) % img.pixels.count] = 60 }
+            flicker.append(img)
+        }
+        var ev: [ThrowTracker.Event] = []
+        for img in flicker { ev += t.process(motionFrame: img, analysisFrame: { img }, personNearBoard: nil) }
+        XCTAssertEqual(ev, [.baselineCaptured], "kleine flikkering mag")
+
+        let shaky = ThrowTracker()
+        var ev2: [ThrowTracker.Event] = []
+        for i in 0..<60 {                          // hele beeld verschuift = iPhone in de hand
+            var img = empty
+            for y in 0..<200 { img[(i * 7) % 200, y] = 20; img[(i * 7 + 1) % 200, y] = 20 }
+            ev2 += shaky.process(motionFrame: img, analysisFrame: { img }, personNearBoard: nil)
+        }
+        XCTAssertTrue(ev2.isEmpty, "trillende camera: geen leeg bord vastleggen")
+        shaky.forceBaseline()
+        XCTAssertEqual(shaky.process(motionFrame: empty, analysisFrame: { self.empty }, personNearBoard: nil), [.baselineCaptured],
+                       "knop 'Nu vastleggen' werkt altijd")
+    }
+
     func testDartDetectedAfterSettle() {
         let t = readyTracker()
         let one = withDarts([(100, 150)])
@@ -593,5 +621,49 @@ final class LearningTests: XCTestCase {
         l.observeCorrected(raw: CGPoint(x: 0, y: 95), shown: CGPoint(x: 0, y: 95), correct: .triple(20))
         let data = try! JSONEncoder().encode(l)
         XCTAssertEqual(try! JSONDecoder().decode(CorrectionLearner.self, from: data), l)
+    }
+}
+
+final class CallerScriptTests: XCTestCase {
+
+    private func isValidXML(_ s: String) -> Bool {
+        XMLParser(data: s.data(using: .utf8)!).parse()
+    }
+
+    func testAllLinesAreValidSSML() {
+        var lines: [CallerLine] = []
+        for style in CallerStyle.allCases {
+            for total in 0...180 {
+                lines += CallerScript.turn(total: total, outcome: .scored, won: false, remaining: 141,
+                                           name: "Liam & <Jonas>", style: style)
+            }
+            lines += CallerScript.turn(total: 0, outcome: .bust, won: false, remaining: 40, name: "Liam", style: style)
+            lines += CallerScript.turn(total: 40, outcome: .checkout, won: true, remaining: 0, name: "Liam", style: style)
+            lines.append(CallerScript.firstThrower("O'Brien & Co", style: style))
+            lines.append(CallerScript.dart(.triple(20), multiplierWord: "Treble", style: style))
+            lines.append(CallerScript.correction(style: style))
+        }
+        for l in lines { XCTAssertTrue(isValidXML(l.ssml), "ongeldige SSML: \(l.ssml)") }
+    }
+
+    func testTVCallerContent() {
+        let t180 = CallerScript.turn(total: 180, outcome: .scored, won: false, remaining: 321, name: "Liam", style: .tv)
+        XCTAssertEqual(t180.count, 1, "321 over: geen 'you require'")
+        XCTAssertTrue(t180[0].ssml.contains(#"rate="40%""#), "eighty wordt uitgerekt")
+        XCTAssertEqual(t180[0].plain, "One hundred and eighty!")
+
+        let t = CallerScript.turn(total: 60, outcome: .scored, won: false, remaining: 40, name: "Liam", style: .tv)
+        XCTAssertEqual(t.map(\.plain), ["sixty", "Liam, you require forty"])
+
+        let ton = CallerScript.scoreLine(140, style: .tv)
+        XCTAssertTrue(ton.ssml.contains("forty!"))
+        XCTAssertEqual(ton.plain, "one hundred and forty!")
+
+        let won = CallerScript.turn(total: 40, outcome: .checkout, won: true, remaining: 0, name: "Liam", style: .tv)
+        XCTAssertEqual(won.map(\.plain), ["Game shot, and the match!"])
+
+        let std = CallerScript.turn(total: 26, outcome: .scored, won: false, remaining: 101, name: "Liam", style: .standard)
+        XCTAssertEqual(std.map(\.plain), ["twenty-six", "You require one hundred and one"])
+        XCTAssertEqual(CallerScript.dart(.outerBull, multiplierWord: "Triple", style: .tv).plain, "Outer Bull")
     }
 }

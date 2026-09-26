@@ -18,34 +18,65 @@ final class CallerAudioManager {
     var multiplierWord: MultiplierWord {
         didSet { UserDefaults.standard.set(multiplierWord.rawValue, forKey: "caller.multiplierWord") }
     }
+    var style: CallerStyle {
+        didSet { UserDefaults.standard.set(style.rawValue, forKey: "caller.style") }
+    }
+    /// Zelf gekozen stem (identifier), nil = automatisch de beste.
+    var chosenVoiceID: String? {
+        didSet {
+            UserDefaults.standard.set(chosenVoiceID, forKey: "caller.voice")
+            refreshVoice()
+        }
+    }
     /// Vanaf deze resterende score (en lager) volgt "You require X".
     let requireThreshold = 150
 
     private let synth = AVSpeechSynthesizer()
-    @ObservationIgnored private var voice: AVSpeechSynthesisVoice?
+    private var voice: AVSpeechSynthesisVoice?
 
     init() {
         let d = UserDefaults.standard
         isEnabled = d.object(forKey: "caller.enabled") as? Bool ?? true
-        multiplierWord = MultiplierWord(rawValue: d.string(forKey: "caller.multiplierWord") ?? "") ?? .triple
-        voice = Self.bestEnglishVoice()
+        multiplierWord = MultiplierWord(rawValue: d.string(forKey: "caller.multiplierWord") ?? "") ?? .treble
+        style = CallerStyle(rawValue: d.string(forKey: "caller.style") ?? "") ?? .tv
+        chosenVoiceID = d.string(forKey: "caller.voice")
+        voice = Self.voice(for: d.string(forKey: "caller.voice"))
         let session = AVAudioSession.sharedInstance()
         // .playback: ook hoorbaar met de stille-modus-schakelaar aan. Andere audio wordt zachter gezet.
         try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
         try? session.setActive(true)
     }
 
-    /// Beste beschikbare Britse stem (Premium > Enhanced > standaard), anders Amerikaans.
+    /// Beste stem voor een darts-caller: Britse mannenstem, Premium > Verbeterd > standaard.
     /// Premium-stemmen downloadt de gebruiker via Instellingen › Toegankelijkheid › Gesproken materiaal › Stemmen.
     static func bestEnglishVoice() -> AVSpeechSynthesisVoice? {
-        let all = AVSpeechSynthesisVoice.speechVoices()
-        for lang in ["en-GB", "en-US"] {
-            let v = all.filter { $0.language == lang }
-            if let best = v.first(where: { $0.quality == .premium }) ?? v.first(where: { $0.quality == .enhanced }) {
-                return best
+        let english = AVSpeechSynthesisVoice.speechVoices().filter { $0.language.hasPrefix("en") }
+        func score(_ v: AVSpeechSynthesisVoice) -> Int {
+            var s = 0
+            switch v.quality {
+            case .premium: s += 100
+            case .enhanced: s += 50
+            default: break
             }
+            if v.language == "en-GB" { s += 20 }            // Britse caller
+            if v.gender == .male { s += 10 }
+            if v.identifier.contains("eloquence") || v.identifier.contains("speech.synthesis.voice") { s -= 200 } // novelty/robot-stemmen
+            return s
         }
-        return AVSpeechSynthesisVoice(language: "en-GB") ?? AVSpeechSynthesisVoice(language: "en-US")
+        return english.max { score($0) < score($1) }
+            ?? AVSpeechSynthesisVoice(language: "en-GB") ?? AVSpeechSynthesisVoice(language: "en-US")
+    }
+
+    static func voice(for identifier: String?) -> AVSpeechSynthesisVoice? {
+        if let identifier, let v = AVSpeechSynthesisVoice(identifier: identifier) { return v }
+        return bestEnglishVoice()
+    }
+
+    /// Alle Engelse stemmen op dit toestel, beste eerst (voor de keuzelijst in Instellingen).
+    static var englishVoices: [AVSpeechSynthesisVoice] {
+        AVSpeechSynthesisVoice.speechVoices()
+            .filter { $0.language.hasPrefix("en") && !$0.identifier.contains("eloquence") && !$0.identifier.contains("speech.synthesis.voice") }
+            .sorted { ($0.quality.rawValue, $0.language == "en-GB" ? 1 : 0, $0.name) > ($1.quality.rawValue, $1.language == "en-GB" ? 1 : 0, $1.name) }
     }
 
     static var hasHighQualityVoice: Bool {
@@ -56,54 +87,52 @@ final class CallerAudioManager {
 
     // MARK: - Publieke API
 
-    /// 1. Na elke afzonderlijke pijl: "Triple 20", "Single 1", "Miss", "Outer Bull", "Bullseye".
+    /// 1. Na elke afzonderlijke pijl: "Treble 20", "Single 1", "Miss", "Outer Bull", "Bullseye".
     func announceDart(_ hit: DartHit) {
-        speak(phrase(for: hit))
+        speak(CallerScript.dart(hit, multiplierWord: multiplierWord.rawValue, style: style))
     }
 
-    /// 2 + 3. Na de beurt: totaal ("180!", "60", "26"), daarna "You require X" als X ≤ 150.
-    func announceTurn(_ record: TurnRecord, won: Bool) {
-        if won {
-            speak("Game shot, and the match!", delay: 0.35, pitch: 1.1)
-            return
-        }
-        switch record.outcome {
-        case .bust:
-            speak("No score", delay: 0.35)
-        case .checkout:
-            speak("Game shot!", delay: 0.35, pitch: 1.1)
-            return
-        case .scored:
-            let total = record.countedPoints
-            if total == 180 {
-                speak("One hundred and eighty!", delay: 0.35, pitch: 1.15, rate: 0.42)
-            } else if total == 0 {
-                speak("No score", delay: 0.35)
-            } else {
-                speak(Self.numberWords(total), delay: 0.35, pitch: total >= 100 ? 1.08 : 1.0)
-            }
-        }
-        let remaining = record.endRemaining
-        if remaining <= requireThreshold && remaining >= 2 {
-            speak("You require \(Self.numberWords(remaining))", delay: 0.45)
+    /// 2 + 3. Na de beurt: totaal ("One hundred and eighty!", "sixty"), daarna "Liam, you require forty" als ≤ 150.
+    func announceTurn(_ record: TurnRecord, won: Bool, name: String? = nil) {
+        for line in CallerScript.turn(total: record.countedPoints, outcome: record.outcome, won: won,
+                                      remaining: record.endRemaining, name: name,
+                                      requireThreshold: requireThreshold, style: style) {
+            speak(line)
         }
     }
 
-    func announceCorrection(_ record: TurnRecord) {
-        speak("Correction.", rate: 0.5)
-        announceTurn(record, won: record.outcome == .checkout)
+    func announceCorrection(_ record: TurnRecord, name: String? = nil) {
+        speak(CallerScript.correction(style: style))
+        announceTurn(record, won: record.outcome == .checkout, name: name)
     }
 
     func announceFirstThrower(_ name: String) {
-        speak("\(name) to throw first. Game on!", delay: 0.2)
+        speak(CallerScript.firstThrower(name, style: style))
     }
 
-    func say(_ text: String) { speak(text) }
+    /// Voorbeeld voor in Instellingen.
+    func demo() {
+        stop()
+        speak(CallerScript.dart(.triple(20), multiplierWord: multiplierWord.rawValue, style: style))
+        speak(CallerScript.dart(.triple(20), multiplierWord: multiplierWord.rawValue, style: style))
+        speak(CallerScript.dart(.triple(20), multiplierWord: multiplierWord.rawValue, style: style))
+        for line in CallerScript.turn(total: 180, outcome: .scored, won: false, remaining: 141, name: "Liam", style: style) {
+            speak(line)
+        }
+        for line in CallerScript.turn(total: 60, outcome: .scored, won: false, remaining: 81, name: "Liam", style: style) {
+            speak(line)
+        }
+    }
+
+    func say(_ text: String) {
+        let plain = CallerLine(ssml: "<speak>\(CallerScript.escape(text))</speak>", plain: text, delay: 0, pitch: 1, rate: 0.48)
+        speak(plain)
+    }
 
     func stop() { synth.stopSpeaking(at: .immediate) }
 
     /// Opnieuw de beste stem zoeken (na het downloaden van een Premium-stem).
-    func refreshVoice() { voice = Self.bestEnglishVoice() }
+    func refreshVoice() { voice = Self.voice(for: chosenVoiceID) }
 
     var voiceDescription: String {
         guard let v = voice else { return "Standaard" }
@@ -133,14 +162,19 @@ final class CallerAudioManager {
 
     // MARK: - Intern
 
-    /// AVSpeechSynthesizer zet utterances zelf in een wachtrij: pijl 3 + totaal + "You require" volgen netjes op elkaar.
-    private func speak(_ text: String, delay: TimeInterval = 0, pitch: Float = 1.0, rate: Float = 0.48) {
+    /// AVSpeechSynthesizer zet utterances zelf in een wachtrij: pijl 3 + totaal + "you require" volgen netjes op elkaar.
+    private func speak(_ line: CallerLine) {
         guard isEnabled else { return }
-        let u = AVSpeechUtterance(string: text)
-        u.voice = voice
-        u.rate = rate
-        u.pitchMultiplier = pitch
-        u.preUtteranceDelay = delay
-        synth.speak(u)
+        let utterance: AVSpeechUtterance
+        if let ssml = AVSpeechUtterance(ssmlRepresentation: line.ssml) {
+            utterance = ssml                       // tempo/toonhoogte/pauzes per woord (TV-caller)
+        } else {
+            utterance = AVSpeechUtterance(string: line.plain)   // terugval: hele zin in één toon
+            utterance.rate = line.rate
+            utterance.pitchMultiplier = line.pitch
+        }
+        utterance.voice = voice
+        utterance.preUtteranceDelay = line.delay
+        synth.speak(utterance)
     }
 }

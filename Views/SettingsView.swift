@@ -1,4 +1,5 @@
 import SwiftUI
+import AVFoundation
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
@@ -17,20 +18,27 @@ struct SettingsView: View {
         Form {
             Section {
                 Toggle("Caller-stem", isOn: $audio.isEnabled)
+                Picker("Stijl", selection: $audio.style) {
+                    ForEach(CallerStyle.allCases) { Text($0.rawValue).tag($0) }
+                }
                 Picker("×3 heet", selection: $audio.multiplierWord) {
                     ForEach(CallerAudioManager.MultiplierWord.allCases) { Text($0.rawValue).tag($0) }
                 }
-                LabeledContent("Stem", value: audio.voiceDescription)
-                Button("Test de caller") {
-                    audio.say("Triple 20. One hundred and eighty! You require one hundred and forty-one.")
+                Picker("Stem", selection: $audio.chosenVoiceID) {
+                    Text("Automatisch (beste)").tag(String?.none)
+                    ForEach(CallerAudioManager.englishVoices, id: \.identifier) { v in
+                        Text(voiceLabel(v)).tag(Optional(v.identifier))
+                    }
                 }
-                Button("Opnieuw naar stemmen zoeken") { audio.refreshVoice() }
+                Button {
+                    audio.demo()
+                } label: {
+                    Label("Laat de caller horen", systemImage: "play.circle.fill")
+                }
             } header: {
                 Text("Caller")
             } footer: {
-                if !CallerAudioManager.hasHighQualityVoice {
-                    Text("Tip: download een Engelse Premium-stem via Instellingen › Toegankelijkheid › Gesproken materiaal › Stemmen › Engels (VK). Die klinkt veel natuurlijker. Tik daarna op ‘Opnieuw naar stemmen zoeken’.")
-                }
+                Text("TV-caller: uitgerekt en dramatisch („One hundred and eightyyy!”, „Liam, you require forty”). Tip: download een Engelse (VK) Premium-mannenstem via iPhone-Instellingen › Toegankelijkheid › Gesproken materiaal › Stemmen, en kies hem hierboven.")
             }
 
             Section {
@@ -104,7 +112,10 @@ struct SettingsView: View {
             }
         }
         .navigationTitle("Instellingen")
-        .onAppear { export = nil }
+        .onAppear {
+            export = nil
+            audio.refreshVoice()
+        }
         .fileImporter(isPresented: $showImporter,
                       allowedContentTypes: [UTType(filenameExtension: "mlpackage") ?? .folder, .folder, .item]) { result in
             guard case .success(let url) = result else { return }
@@ -136,5 +147,16 @@ struct SettingsView: View {
                 export = nil
             }
         }
+    }
+
+    private func voiceLabel(_ v: AVSpeechSynthesisVoice) -> String {
+        let q: String
+        switch v.quality {
+        case .premium: q = " · Premium"
+        case .enhanced: q = " · Verbeterd"
+        default: q = ""
+        }
+        let region = v.language == "en-GB" ? "🇬🇧" : v.language == "en-US" ? "🇺🇸" : v.language == "en-AU" ? "🇦🇺" : v.language == "en-IE" ? "🇮🇪" : v.language
+        return "\(region) \(v.name)\(q)"
     }
 }

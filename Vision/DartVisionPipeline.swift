@@ -137,6 +137,7 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     }
 
     func lockTurn() { queue.async { self.tracker.lockTurn() } }
+    func forceBaseline() { queue.async { self.tracker.forceBaseline() } }
     func resumeTurn(dartsInBoard n: Int) { queue.async { self.tracker.resumeTurn(dartsInBoard: n) } }
     func setDartsCounted(_ n: Int) { queue.async { self.tracker.setDartsCounted(n) } }
     func manualNext() { queue.async { self.tracker.manualNext() } }

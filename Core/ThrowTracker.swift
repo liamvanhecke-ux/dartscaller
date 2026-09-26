@@ -37,6 +37,8 @@ final class ThrowTracker {
         var motionPixelThreshold = 18
         /// Zoveel pixels veranderd tussen twee beelden = beweging.
         var motionMinPixels = 3
+        /// Voor het vastleggen van het lege bord: kleine lichtflikkering (buiten, doorschijnend dak) toelaten.
+        var baselineMaxMovingPixels = 40
         /// Aantal stilstaande beelden voordat we analyseren (≈130 ms bij 60 fps).
         var settleFrames = 8
         /// Ook zonder waargenomen beweging elke N beelden controleren (vangnet voor supersnelle pijlen).
@@ -69,6 +71,7 @@ final class ThrowTracker {
     private var frame = 0
     private var personStreak = 0
     private var lastPersonFrame = Int.min / 2
+    private var forceBaselineRequested = false
 
     init(config: Config = Config()) { self.config = config }
 
@@ -85,10 +88,14 @@ final class ThrowTracker {
 
     /// Opnieuw een leeg bord vastleggen (na herkalibratie).
     func resetBaseline() {
+        forceBaselineRequested = false
         emptyBoard = nil
         reference = nil
         state = .needsBaseline(still: 0)
     }
+
+    /// Knop "Nu vastleggen": het volgende beeld wordt het lege bord, ook als het niet 100% stil is.
+    func forceBaseline() { forceBaselineRequested = true }
 
     /// Beurt is voorbij (3 pijlen, bust, checkout) → nieuwe pijlen negeren tot het bord leeg is.
     func lockTurn() { turnLocked = true }
@@ -131,7 +138,17 @@ final class ThrowTracker {
         var events: [Event] = []
 
         if case .needsBaseline(let still) = state {
-            if !isMoving && personStreak == 0 {
+            if forceBaselineRequested {
+                forceBaselineRequested = false
+                let img = analysisFrame()
+                emptyBoard = img
+                reference = img
+                state = .idle(sinceCheck: 0)
+                events.append(.baselineCaptured)
+                return events
+            }
+            let calmEnough = moved <= config.baselineMaxMovingPixels
+            if calmEnough && personStreak == 0 {
                 if still + 1 >= config.clearStillFrames {
                     let img = analysisFrame()
                     emptyBoard = img

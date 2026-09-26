@@ -79,11 +79,11 @@ final class GameSession {
         case .dart(let hit):
             audio.announceDart(hit)
         case .turnEnded(let record):
-            audio.announceTurn(record, won: engine.phase == .finished)
+            audio.announceTurn(record, won: engine.phase == .finished, name: engine.seats[record.seatIndex].name)
             camera?.pipeline.lockTurn()
         case .turnCorrected(let record):
             if record.id == engine.records.last?.id {
-                audio.announceCorrection(record)
+                audio.announceCorrection(record, name: engine.seats[record.seatIndex].name)
             } else {
                 audio.say("Correction.")
             }
