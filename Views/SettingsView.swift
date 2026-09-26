@@ -21,6 +21,23 @@ struct SettingsView: View {
                 Picker("Stijl", selection: $audio.style) {
                     ForEach(CallerStyle.allCases) { Text($0.rawValue).tag($0) }
                 }
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Tempo")
+                        Spacer()
+                        Text(audio.tempo.formatted(.percent.precision(.fractionLength(0))))
+                            .foregroundStyle(.secondary).monospacedDigit()
+                    }
+                    Slider(value: $audio.tempo, in: 0.7...1.5, step: 0.05) {
+                        Text("Tempo")
+                    } minimumValueLabel: {
+                        Image(systemName: "tortoise")
+                    } maximumValueLabel: {
+                        Image(systemName: "hare")
+                    } onEditingChanged: { editing in
+                        if !editing { audio.demo() }      // meteen horen na loslaten
+                    }
+                }
                 Picker("×3 heet", selection: $audio.multiplierWord) {
                     ForEach(CallerAudioManager.MultiplierWord.allCases) { Text($0.rawValue).tag($0) }
                 }

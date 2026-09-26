@@ -21,6 +21,10 @@ final class CallerAudioManager {
     var style: CallerStyle {
         didSet { UserDefaults.standard.set(style.rawValue, forKey: "caller.style") }
     }
+    /// Spreektempo van de caller (1.0 = standaard). Instelbaar met een schuif.
+    var tempo: Double {
+        didSet { UserDefaults.standard.set(tempo, forKey: "caller.tempo") }
+    }
     /// Zelf gekozen stem (identifier), nil = automatisch de beste.
     var chosenVoiceID: String? {
         didSet {
@@ -39,6 +43,7 @@ final class CallerAudioManager {
         isEnabled = d.object(forKey: "caller.enabled") as? Bool ?? true
         multiplierWord = MultiplierWord(rawValue: d.string(forKey: "caller.multiplierWord") ?? "") ?? .treble
         style = CallerStyle(rawValue: d.string(forKey: "caller.style") ?? "") ?? .tv
+        tempo = d.object(forKey: "caller.tempo") as? Double ?? 1.0
         chosenVoiceID = d.string(forKey: "caller.voice")
         voice = Self.voice(for: d.string(forKey: "caller.voice"))
         let session = AVAudioSession.sharedInstance()
@@ -89,37 +94,37 @@ final class CallerAudioManager {
 
     /// 1. Na elke afzonderlijke pijl: "Treble 20", "Single 1", "Miss", "Outer Bull", "Bullseye".
     func announceDart(_ hit: DartHit) {
-        speak(CallerScript.dart(hit, multiplierWord: multiplierWord.rawValue, style: style))
+        speak(CallerScript.dart(hit, multiplierWord: multiplierWord.rawValue, style: style, tempo: tempo))
     }
 
     /// 2 + 3. Na de beurt: totaal ("One hundred and eighty!", "sixty"), daarna "Liam, you require forty" als ≤ 150.
     func announceTurn(_ record: TurnRecord, won: Bool, name: String? = nil) {
         for line in CallerScript.turn(total: record.countedPoints, outcome: record.outcome, won: won,
                                       remaining: record.endRemaining, name: name,
-                                      requireThreshold: requireThreshold, style: style) {
+                                      requireThreshold: requireThreshold, style: style, tempo: tempo) {
             speak(line)
         }
     }
 
     func announceCorrection(_ record: TurnRecord, name: String? = nil) {
-        speak(CallerScript.correction(style: style))
+        speak(CallerScript.correction(style: style, tempo: tempo))
         announceTurn(record, won: record.outcome == .checkout, name: name)
     }
 
     func announceFirstThrower(_ name: String) {
-        speak(CallerScript.firstThrower(name, style: style))
+        speak(CallerScript.firstThrower(name, style: style, tempo: tempo))
     }
 
     /// Voorbeeld voor in Instellingen.
     func demo() {
         stop()
-        speak(CallerScript.dart(.triple(20), multiplierWord: multiplierWord.rawValue, style: style))
-        speak(CallerScript.dart(.triple(20), multiplierWord: multiplierWord.rawValue, style: style))
-        speak(CallerScript.dart(.triple(20), multiplierWord: multiplierWord.rawValue, style: style))
-        for line in CallerScript.turn(total: 180, outcome: .scored, won: false, remaining: 141, name: "Liam", style: style) {
+        speak(CallerScript.dart(.triple(20), multiplierWord: multiplierWord.rawValue, style: style, tempo: tempo))
+        speak(CallerScript.dart(.triple(20), multiplierWord: multiplierWord.rawValue, style: style, tempo: tempo))
+        speak(CallerScript.dart(.triple(20), multiplierWord: multiplierWord.rawValue, style: style, tempo: tempo))
+        for line in CallerScript.turn(total: 180, outcome: .scored, won: false, remaining: 141, name: "Liam", style: style, tempo: tempo) {
             speak(line)
         }
-        for line in CallerScript.turn(total: 60, outcome: .scored, won: false, remaining: 81, name: "Liam", style: style) {
+        for line in CallerScript.turn(total: 60, outcome: .scored, won: false, remaining: 81, name: "Liam", style: style, tempo: tempo) {
             speak(line)
         }
     }

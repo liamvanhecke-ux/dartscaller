@@ -649,7 +649,12 @@ final class CallerScriptTests: XCTestCase {
     func testTVCallerContent() {
         let t180 = CallerScript.turn(total: 180, outcome: .scored, won: false, remaining: 321, name: "Liam", style: .tv)
         XCTAssertEqual(t180.count, 1, "321 over: geen 'you require'")
-        XCTAssertTrue(t180[0].ssml.contains(#"rate="40%""#), "eighty wordt uitgerekt")
+        XCTAssertTrue(t180[0].ssml.contains(#"<prosody rate="68%" pitch="+22%" volume="x-loud">eighty!"#), "enkel 'eighty' uitgerekt")
+        XCTAssertTrue(t180[0].ssml.contains(#"<prosody rate="110%" pitch="+8%" volume="x-loud">One hundred and"#), "rest vlot")
+        let fast = CallerScript.turn(total: 180, outcome: .scored, won: false, remaining: 321, name: nil, style: .tv, tempo: 1.2)
+        XCTAssertTrue(fast[0].ssml.contains(#"rate="82%""#), "tempo-schuif werkt (68 × 1,2)")
+        XCTAssertEqual(CallerScript.pct(30, 1), "40%", "ondergrens")
+        XCTAssertEqual(CallerScript.pct(150, 1.5), "200%", "bovengrens")
         XCTAssertEqual(t180[0].plain, "One hundred and eighty!")
 
         let t = CallerScript.turn(total: 60, outcome: .scored, won: false, remaining: 40, name: "Liam", style: .tv)
