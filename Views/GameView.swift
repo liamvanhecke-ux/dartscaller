@@ -128,7 +128,7 @@ struct GameView: View {
 
     private var statusPill: some View {
         let (text, color, icon): (String, Color, String) = {
-            if session.playerAtBoard { return ("Speler bij het bord", .orange, "figure.walk") }
+            if session.playerAtBoard { return ("Speler bij het bord — haal de pijlen eruit", .orange, "figure.walk") }
             switch engine.phase {
             case .throwing: return ("Wacht op pijl \(engine.turn.count + 1)", .green, "dot.radiowaves.left.and.right")
             case .awaitingNext: return ("Haal de pijlen uit het bord", .blue, "hand.raised")

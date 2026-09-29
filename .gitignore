@@ -4,3 +4,8 @@ DartsCaller.xcodeproj/
 *.ipa
 Training/datasets/
 Training/runs/
+Sandbox/.venv/
+Sandbox/sessions/
+Sandbox/dataset/
+Sandbox/opnames/
+__pycache__/

@@ -30,6 +30,10 @@ final class ThrowTracker {
         case playerAtBoard(dartsCounted: Int, wasLocked: Bool, reason: AtBoardReason)
         /// Speler weg en beeld stabiel: pijlen zijn opgehaald.
         case boardCleared
+        /// Speler weg, maar er zitten nog pijlen in het bord (iemand liep gewoon voorbij).
+        case personLeft(dartsCounted: Int)
+        /// Kandidaat-worp afgekeurd (ghost). Handig voor debuggen/statistiek.
+        case rejected(reason: String)
     }
 
     struct Config {
@@ -41,8 +45,22 @@ final class ThrowTracker {
         var baselineMaxMovingPixels = 40
         /// Aantal stilstaande beelden voordat we analyseren (≈130 ms bij 60 fps).
         var settleFrames = 8
-        /// Ook zonder waargenomen beweging elke N beelden controleren (vangnet voor supersnelle pijlen).
-        var idlePollFrames = 30
+        /// Ook zonder waargenomen beweging elke N beelden controleren. nil = uit
+        /// (uit = minder ghost throws door licht-drift; aanzetten als pijlen gemist worden).
+        var idlePollFrames: Int? = nil
+        /// Deel van het bewegingsbeeld dat in één frame beweegt → persoon/hand.
+        var obstructionFraction = 0.06
+        /// Zoveel frames op rij met grote beweging → persoon/hand (nooit scoren).
+        var obstructionFrames = 3
+        /// Een worp is kort: langer bewegen (frames, ≈0,8 s bij 60 fps) = persoon.
+        var maxMotionFrames = 48
+        /// Verificatie van de kandidaat-pijl
+        var minElongation = 2.5
+        var minContrast = 38.0
+        /// Gemiddeld helderheidsverschil van het hele bord → lichtverandering, geen worp.
+        var lightingDelta = 6.0
+        /// Minimale tijd tussen twee worpen (frames, ≈0,6 s bij 60 fps).
+        var cooldownFrames = 36
         /// Zoveel opeenvolgende positieve persoonsdetecties nodig.
         var personChecksNeeded = 2
         /// Zo lang geen persoon meer gezien (beelden) voordat het bord als leeg telt.
@@ -55,7 +73,7 @@ final class ThrowTracker {
     private enum State: Equatable {
         case needsBaseline(still: Int)
         case idle(sinceCheck: Int)
-        case moving
+        case moving(frames: Int, large: Int)
         case settling(Int)
         case atBoard(still: Int)
     }
@@ -72,6 +90,9 @@ final class ThrowTracker {
     private var personStreak = 0
     private var lastPersonFrame = Int.min / 2
     private var forceBaselineRequested = false
+    private var lastThrowFrame = Int.min / 2
+    /// Laatste reden waarom een kandidaat werd afgekeurd (voor debug-weergave).
+    private(set) var lastRejection: String?
 
     init(config: Config = Config()) { self.config = config }
 
@@ -129,6 +150,8 @@ final class ThrowTracker {
         }
         previousMotion = motionFrame
         let isMoving = moved >= config.motionMinPixels
+        let isLargeMotion = moved != Int.max &&
+            Double(moved) >= config.obstructionFraction * Double(motionFrame.pixels.count)
 
         if let p = personNearBoard {
             personStreak = p ? personStreak + 1 : 0
@@ -176,19 +199,32 @@ final class ThrowTracker {
         case .needsBaseline:
             break
         case .idle(let since):
-            if isMoving {
-                state = .moving
-            } else if since + 1 >= config.idlePollFrames {
+            if isLargeMotion {
+                enterAtBoard(&events, reason: .obstruction)
+            } else if isMoving {
+                state = .moving(frames: 1, large: 0)
+            } else if let poll = config.idlePollFrames, since + 1 >= poll {
                 state = .idle(sinceCheck: 0)
                 analyzeSettled(analysisFrame(), &events)
             } else {
                 state = .idle(sinceCheck: since + 1)
             }
-        case .moving:
-            if !isMoving { state = .settling(1) }
+        case .moving(let frames, let large):
+            let nowLarge = isLargeMotion ? large + 1 : 0
+            if nowLarge >= config.obstructionFrames {
+                enterAtBoard(&events, reason: .obstruction)          // persoon/hand: nooit scoren
+            } else if frames + 1 > config.maxMotionFrames {
+                enterAtBoard(&events, reason: .obstruction)          // te lang bewogen voor een worp
+            } else if !isMoving {
+                state = .settling(1)
+            } else {
+                state = .moving(frames: frames + 1, large: nowLarge)
+            }
         case .settling(let n):
-            if isMoving {
-                state = .moving
+            if isLargeMotion {
+                enterAtBoard(&events, reason: .obstruction)
+            } else if isMoving {
+                state = .moving(frames: 1, large: 0)                 // pijl trilt nog na
             } else if n + 1 >= config.settleFrames {
                 state = .idle(sinceCheck: 0)
                 analyzeSettled(analysisFrame(), &events)
@@ -201,12 +237,21 @@ final class ThrowTracker {
             if personGone && nowStill >= config.clearStillFrames {
                 let img = analysisFrame()
                 reference = img
-                // Licht verandert in de loop van een avond: ververs het lege-bordbeeld als het er nog op lijkt.
-                if let empty = emptyBoard, ImageAnalysis.meanAbsDifference(img, empty) < 0.02 { emptyBoard = img }
-                dartsCounted = 0
-                turnLocked = false
                 state = .idle(sinceCheck: 0)
-                events.append(.boardCleared)
+                // Zitten er nog pijlen in? Vergelijk met het lege bord.
+                var stillDarts = false
+                if let empty = emptyBoard {
+                    let rest = ImageAnalysis.analyzeChange(current: img, reference: empty, emptyBoard: nil, params: config.change)
+                    stillDarts = rest.kind == .dartAdded
+                    if rest.kind == .none { emptyBoard = img }      // licht bijwerken
+                }
+                if stillDarts {
+                    events.append(.personLeft(dartsCounted: dartsCounted))
+                } else {
+                    dartsCounted = 0
+                    turnLocked = false
+                    events.append(.boardCleared)
+                }
             } else {
                 state = .atBoard(still: nowStill)
             }
@@ -231,6 +276,21 @@ final class ThrowTracker {
         case .dartAdded:
             reference = current
             guard !turnLocked, let blob = result.dartBlob else { return }
+            // Meervoudige verificatie: alles moet kloppen, anders is het een ghost.
+            var reasons: [String] = []
+            let elong = ImageAnalysis.elongation(of: blob)
+            if elong < config.minElongation { reasons.append("niet langwerpig (\(String(format: "%.1f", elong)))") }
+            let contrast = ImageAnalysis.contrast(of: blob, current, ref)
+            if contrast < config.minContrast { reasons.append("zacht contrast (schaduw?)") }
+            let light = abs(ImageAnalysis.meanBrightness(current) - ImageAnalysis.meanBrightness(ref))
+            if light > config.lightingDelta { reasons.append("lichtverandering") }
+            if frame - lastThrowFrame < config.cooldownFrames { reasons.append("binnen cooldown") }
+            if !reasons.isEmpty {
+                lastRejection = reasons.joined(separator: ", ")
+                events.append(.rejected(reason: lastRejection!))
+                return
+            }
+            lastThrowFrame = frame
             dartsCounted += 1
             if mode == .game && dartsCounted >= 3 { turnLocked = true }
             events.append(.dart(tip: ImageAnalysis.locateTip(of: blob, cameraSide: cameraSide)))

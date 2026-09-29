@@ -350,8 +350,10 @@ final class ThrowTrackerTests: XCTestCase {
         ev.compactMap { if case .dart(let p) = $0 { return p }; return nil }
     }
 
-    private func readyTracker() -> ThrowTracker {
-        let t = ThrowTracker()
+    private func readyTracker(_ config: ThrowTracker.Config? = nil) -> ThrowTracker {
+        var c = config ?? ThrowTracker.Config()
+        if config == nil { c.cooldownFrames = 5 }        // tests gooien sneller dan mensen
+        let t = ThrowTracker(config: c)
         t.cameraSide = Vector2D(dx: 0, dy: 1)
         XCTAssertEqual(feed(t, empty, 30), [.baselineCaptured])
         t.setMode(.game)
@@ -395,7 +397,10 @@ final class ThrowTrackerTests: XCTestCase {
     }
 
     func testIdlePollCatchesDartWithoutMotion() {
-        let t = readyTracker()
+        var c = ThrowTracker.Config()
+        c.idlePollFrames = 30                            // standaard uit (ghost-bron), hier aan
+        c.cooldownFrames = 5
+        let t = readyTracker(c)
         feed(t, empty, 5)
         // Simuleer: bewegingsdetectie mist de pijl (motion-beeld blijft leeg), maar het analysebeeld heeft hem.
         let one = withDarts([(80, 120)])
@@ -436,6 +441,49 @@ final class ThrowTrackerTests: XCTestCase {
         let ev = feed(t, empty, 12)
         XCTAssertEqual(ev, [.playerAtBoard(dartsCounted: 1, wasLocked: false, reason: .dartsRemoved)])
         XCTAssertEqual(feed(t, empty, 60), [.boardCleared])
+    }
+
+    func testGhostsAreRejected() {
+        let t = readyTracker()
+        // Zachte, ronde vlek (schaduw) → afgekeurd
+        var shadow = empty
+        for y in 60..<90 { for x in 60..<90 { shadow[x, y] = 150 } }     // zachte, ronde vlek
+        let ev = feed(t, shadow, 12)
+        XCTAssertTrue(dartTips(ev).isEmpty, "schaduw is geen worp")
+        XCTAssertTrue(ev.contains { if case .rejected = $0 { return true }; return false })
+        // Echte pijl daarna (schaduw blijft liggen) wordt wel geteld
+        var dart = withDarts([(150, 170)])
+        for y in 60..<90 { for x in 60..<90 { dart[x, y] = 150 } }
+        XCTAssertEqual(dartTips(feed(t, dart, 12)).count, 1)
+    }
+
+    func testCooldownBlocksDoubleTrigger() {
+        let t = readyTracker(ThrowTracker.Config())      // standaard cooldown (36 frames)
+        XCTAssertEqual(dartTips(feed(t, withDarts([(50, 150)]), 12)).count, 1)
+        let ev = feed(t, withDarts([(50, 150), (120, 150)]), 12)   // 12 frames later = te snel
+        XCTAssertTrue(dartTips(ev).isEmpty)
+        XCTAssertTrue(ev.contains(.rejected(reason: "binnen cooldown")))
+    }
+
+    func testLongMotionIsPersonNotThrow() {
+        let t = readyTracker()
+        // 60 frames lang telkens een beetje beweging (iemand die rondloopt aan de rand)
+        var ev: [ThrowTracker.Event] = []
+        for i in 0..<60 {
+            var img = empty
+            for k in 0..<30 { img[(i * 3 + k) % 200, 5] = 20 }
+            ev += t.process(motionFrame: img, analysisFrame: { img }, personNearBoard: nil)
+        }
+        XCTAssertTrue(dartTips(ev).isEmpty)
+        XCTAssertTrue(ev.contains { if case .playerAtBoard(_, _, .obstruction) = $0 { return true }; return false })
+    }
+
+    func testPersonLeavesWithDartsStillInBoard() {
+        let t = readyTracker()
+        let one = withDarts([(100, 150)])
+        feed(t, one, 12)
+        XCTAssertEqual(feed(t, one, 13, person: true), [.playerAtBoard(dartsCounted: 1, wasLocked: false, reason: .person)])
+        XCTAssertEqual(feed(t, one, 90, person: false), [.personLeft(dartsCounted: 1)], "pijl zit er nog: geen 'bord leeg'")
     }
 
     func testManualNextKeepsBoardLockedUntilCleared() {

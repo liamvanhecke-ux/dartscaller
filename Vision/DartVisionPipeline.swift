@@ -11,6 +11,10 @@ enum VisionEvent {
     case dart(DartHit, imagePoint: CGPoint, byModel: Bool, capture: FrameCapture?)
     case playerAtBoard(dartsCounted: Int, wasLocked: Bool, reason: ThrowTracker.AtBoardReason)
     case boardCleared
+    /// Persoon weg, maar er zitten nog pijlen in (iemand liep voorbij).
+    case personLeft(dartsCounted: Int)
+    /// Kandidaat-worp afgekeurd (schaduw, licht, cooldown…).
+    case ignored(reason: String)
 }
 
 /// Verwerkt camerabeelden op een eigen queue. Alle status leeft op `queue`;
@@ -238,6 +242,10 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
             case .boardCleared:
                 dartsInBoardMM = []
                 emit(.boardCleared)
+            case .personLeft(let n):
+                emit(.personLeft(dartsCounted: n))
+            case .rejected(let reason):
+                emit(.ignored(reason: reason))
             }
         }
     }

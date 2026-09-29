@@ -211,6 +211,42 @@ enum ImageAnalysis {
         return result
     }
 
+    // MARK: Verificatie van een kandidaat-pijl
+
+    /// Verhouding lange/korte as (PCA). Pijl ≈ 3–10, schaduw/vlek ≈ 1–2.
+    static func elongation(of blob: Blob) -> Double {
+        guard blob.area >= 3 else { return 1 }
+        let n = Double(blob.area)
+        var mx = 0.0, my = 0.0
+        for i in 0..<blob.area { mx += Double(blob.xs[i]); my += Double(blob.ys[i]) }
+        mx /= n; my /= n
+        var sxx = 0.0, syy = 0.0, sxy = 0.0
+        for i in 0..<blob.area {
+            let dx = Double(blob.xs[i]) - mx, dy = Double(blob.ys[i]) - my
+            sxx += dx * dx; syy += dy * dy; sxy += dx * dy
+        }
+        let tr = sxx + syy, det = sxx * syy - sxy * sxy
+        let disc = max(0, tr * tr / 4 - det).squareRoot()
+        let l1 = tr / 2 + disc, l2 = max(tr / 2 - disc, 1e-6)
+        return (l1 / l2).squareRoot()
+    }
+
+    /// Gemiddeld grijsverschil binnen de blob (schaduwen zijn zacht, pijlen scherp).
+    static func contrast(of blob: Blob, _ a: GrayImage, _ b: GrayImage) -> Double {
+        guard blob.area > 0 else { return 0 }
+        var sum = 0
+        for i in 0..<blob.area {
+            let idx = blob.ys[i] * a.width + blob.xs[i]
+            sum += abs(Int(a.pixels[idx]) - Int(b.pixels[idx]))
+        }
+        return Double(sum) / Double(blob.area)
+    }
+
+    static func meanBrightness(_ img: GrayImage) -> Double {
+        guard !img.pixels.isEmpty else { return 0 }
+        return Double(img.pixels.reduce(0) { $0 + Int($1) }) / Double(img.pixels.count)
+    }
+
     // MARK: Pijlpunt
 
     /// De punt is het uiteinde van de pijl aan de kant van de camera (zie BoardCalibration.cameraSideDirection).

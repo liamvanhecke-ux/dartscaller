@@ -32,6 +32,8 @@ final class GameSession {
 
     // Status voor de UI
     private(set) var playerAtBoard = false
+    /// Laatste genegeerde kandidaat-worp (voor de statusweergave).
+    private(set) var lastIgnored: String?
     private(set) var toast: String? = nil
     @ObservationIgnored private var toastTask: Task<Void, Never>? = nil
     @ObservationIgnored var statsRecorded = false
@@ -112,34 +114,35 @@ final class GameSession {
                 break
             }
 
-        case .playerAtBoard(let counted, let wasLocked, let reason):
+        case .playerAtBoard:
+            // Nog NIETS invullen: iemand die naar het bord loopt is geen worp.
+            // Missers volgen pas als de pijlen echt uit het bord zijn (boardCleared).
             playerAtBoard = true
-            switch stage {
-            case .bullOff:
-                bullOffPlayerAtBoard()
-            case .playing:
-                // Specificatie: speler bij het bord en nog geen 3 pijlen → rest = MIS, beurt dicht.
-                // Niet bij een vergrendelde beurt, en niet als alleen oude pijlen verdwijnen (0 getelde pijlen).
-                let fill = engine.phase == .throwing && !wasLocked && (reason == .person || counted > 0)
-                if fill {
-                    let missing = engine.dartsLeftInTurn
-                    engine.completeTurnWithMisses()
-                    showToast(missing == 1 ? "1 pijl niet gezien → Mis" : "\(missing) pijlen niet gezien → Mis")
-                }
-            case .finished:
-                break
-            }
+
+        case .personLeft:
+            playerAtBoard = false
+
+        case .ignored(let reason):
+            lastIgnored = reason
 
         case .boardCleared:
             playerAtBoard = false
             switch stage {
-            case .bullOff: bullOffBoardCleared()
+            case .bullOff:
+                bullOffBoardCleared()
             case .playing:
+                if engine.phase == .throwing && !engine.turn.isEmpty {
+                    // Pijlen opgehaald met < 3 pijlen gezien → rest = MIS, beurt dicht
+                    let missing = engine.dartsLeftInTurn
+                    engine.completeTurnWithMisses()
+                    showToast(missing == 1 ? "1 pijl niet gezien → Mis" : "\(missing) pijlen niet gezien → Mis")
+                }
                 if engine.phase == .awaitingNext {
                     learning?.confirm(engine.records.last?.darts ?? [])   // niet gecorrigeerd = juist
                     engine.nextPlayer()
                 }
-            case .finished: break
+            case .finished:
+                break
             }
 
         case .boardFound, .baselineCaptured:
@@ -237,16 +240,6 @@ final class GameSession {
         if bullOffIndex >= bullOffThrowers.count { decideBullOff() }
     }
 
-    private func bullOffPlayerAtBoard() {
-        // Iemand loopt naar het bord terwijl nog niet iedereen gegooid heeft: rest = mis.
-        guard bullOffState == .throwing, bullOffIndex > 0 else { return }
-        while bullOffIndex < bullOffThrowers.count {
-            bullOffHits[bullOffThrowers[bullOffIndex].id] = .miss
-            bullOffIndex += 1
-        }
-        decideBullOff()
-    }
-
     private func decideBullOff() {
         camera?.pipeline.lockTurn()
         let result = BullOff.decide(bullOffThrowers.map { (player: $0.id, hit: bullOffHits[$0.id]) })
@@ -261,6 +254,14 @@ final class GameSession {
     }
 
     private func bullOffBoardCleared() {
+        // Pijlen opgehaald terwijl nog niet iedereen gooide → rest = mis
+        if bullOffState == .throwing && bullOffIndex > 0 {
+            while bullOffIndex < bullOffThrowers.count {
+                bullOffHits[bullOffThrowers[bullOffIndex].id] = .miss
+                bullOffIndex += 1
+            }
+            decideBullOff()
+        }
         switch bullOffState {
         case .decided(let id): startMatch(winner: id)
         case .rethrow(let ids): startRethrow(ids)
