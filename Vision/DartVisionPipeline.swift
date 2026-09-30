@@ -142,6 +142,10 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
 
     func lockTurn() { queue.async { self.tracker.lockTurn() } }
     func forceBaseline() { queue.async { self.tracker.forceBaseline() } }
+
+    // [TRILLING 1] Aanraking van het scherm (statief kan trillen). Veilig vanaf elke thread.
+    func touchBegan() { queue.async { self.tracker.touchBegan() } }
+    func touchEnded() { queue.async { self.tracker.touchEnded() } }
     func resumeTurn(dartsInBoard n: Int) { queue.async { self.tracker.resumeTurn(dartsInBoard: n) } }
     func setDartsCounted(_ n: Int) { queue.async { self.tracker.setDartsCounted(n) } }
     func manualNext() { queue.async { self.tracker.manualNext() } }
@@ -254,9 +258,15 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     private func modelDartPoint(_ crop: CGImage, cal: BoardCalibration, hintMM: CGPoint) -> CGPoint? {
         guard let detector else { return nil }
         let sx = cal.roi.width / CGFloat(crop.width), sy = cal.roi.height / CGFloat(crop.height)
+        // [TRILLING 2] Blijvende statief-verschuiving (analysepixels) → beeldpixels, en terugrekenen
+        // naar de positie bij kalibratie.
+        let (aw, _) = FrameRenderer.outputSize(for: cal.roi, targetWidth: analysisWidth)
+        let k = cal.roi.width / CGFloat(aw)
+        let offX = CGFloat(tracker.poseOffset.dx) * k, offY = CGFloat(tracker.poseOffset.dy) * k
         let detections = detector.detect(in: crop).map {
             Detection(label: $0.label,
-                      point: CGPoint(x: cal.roi.minX + $0.point.x * sx, y: cal.roi.minY + $0.point.y * sy),
+                      point: CGPoint(x: cal.roi.minX + $0.point.x * sx - offX,
+                                     y: cal.roi.minY + $0.point.y * sy - offY),
                       confidence: $0.confidence)
         }
         let tips = YoloInterpreter.dartTips(detections, labels: detector.labels)

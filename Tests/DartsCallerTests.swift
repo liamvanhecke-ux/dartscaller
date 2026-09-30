@@ -720,3 +720,98 @@ final class CallerScriptTests: XCTestCase {
         XCTAssertEqual(CallerScript.dart(.outerBull, multiplierWord: "Triple", style: .tv).plain, "Outer Bull")
     }
 }
+
+final class ShakeFilterTests: XCTestCase {
+
+    /// Bord-achtige textuur (sectoren + ringen), zodat verschuivingen meetbaar zijn zoals bij een echt bord.
+    private let board: GrayImage = {
+        var img = GrayImage(width: 200, height: 200, fill: 0)
+        for y in 0..<200 { for x in 0..<200 {
+            let dx = Double(x - 100), dy = Double(y - 100)
+            let a = atan2(dy, dx), r = hypot(dx, dy)
+            let sector = Int((a + .pi) / (2 * .pi) * 20) % 2
+            let ring = Int(r / 12) % 2
+            img[x, y] = UInt8(60 + 90 * sector + 40 * ring)
+        } }
+        return img
+    }()
+
+    private func dart(on base: GrayImage, tip: (Int, Int)) -> GrayImage {
+        var img = base
+        for t in 0...50 {
+            let r = t > 38 ? 3 : 1
+            for dy in -r...r { for dx in -r...r { img[tip.0 + dx, tip.1 - t + dy] = 255 } }
+        }
+        return img
+    }
+
+    private func tracker() -> ThrowTracker {
+        var c = ThrowTracker.Config()
+        c.cooldownFrames = 5
+        let t = ThrowTracker(config: c)
+        t.cameraSide = Vector2D(dx: 0, dy: 1)
+        for _ in 0..<30 { _ = t.process(motionFrame: board, analysisFrame: { self.board }, personNearBoard: nil) }
+        XCTAssertTrue(t.hasBaseline)
+        t.setMode(.game)
+        return t
+    }
+
+    private func feed(_ t: ThrowTracker, _ img: GrayImage, _ n: Int) -> [ThrowTracker.Event] {
+        (0..<n).flatMap { _ in t.process(motionFrame: img, analysisFrame: { img }, personNearBoard: nil) }
+    }
+
+    func testEstimateShiftOnBoard() {
+        let moved = GlobalMotion.shifted(board, by: .init(dx: 3, dy: -2))
+        XCTAssertEqual(GlobalMotion.estimateShift(from: board, to: moved, maxShift: 5), .init(dx: 3, dy: -2))
+        XCTAssertEqual(GlobalMotion.changedPixelCount(board, moved, shift: .init(dx: 3, dy: -2), threshold: 18), 0,
+                       "na compensatie: geen beweging meer")
+        // Een pijl erbij is LOKALE beweging: geen verschuiving
+        XCTAssertEqual(GlobalMotion.estimateShift(from: board, to: dart(on: board, tip: (120, 150)), maxShift: 5), .zero)
+    }
+
+    /// Statief trilt (hele beeld ±2 px heen en weer) zonder aanraking-melding → geen worp, geen obstructie.
+    func testTripodShakeIsIgnored() {
+        let t = tracker()
+        var ev: [ThrowTracker.Event] = []
+        for i in 0..<30 {
+            let s = GlobalMotion.Shift(dx: [2, -1, 1, -2, 0][i % 5], dy: [1, 0, -2, 1, -1][i % 5])
+            ev += feed(t, GlobalMotion.shifted(board, by: s), 1)
+        }
+        ev += feed(t, board, 30)
+        XCTAssertTrue(ev.isEmpty, "trilling mag niets triggeren: \(ev)")
+    }
+
+    /// Statief blijft na de tik 2 px verschoven staan → pijl daarna wordt correct gevonden,
+    /// en de punt wordt teruggerekend naar de positie bij kalibratie.
+    func testPermanentShiftIsCompensated() {
+        let t = tracker()
+        let shift = GlobalMotion.Shift(dx: 2, dy: 1)
+        let shiftedBoard = GlobalMotion.shifted(board, by: shift)
+        XCTAssertTrue(feed(t, shiftedBoard, 30).isEmpty)
+        // pijl met punt op (120, 150) in de ORIGINELE positie → in het verschoven beeld op (122, 151)
+        let withDart = dart(on: shiftedBoard, tip: (122, 151))
+        let ev = feed(t, withDart, 14)
+        let tips = ev.compactMap { if case .dart(let p) = $0 { return p }; return nil }
+        XCTAssertEqual(tips.count, 1, "\(ev)")
+        XCTAssertEqual(Double(tips[0].x), 120.5, accuracy: 2)
+        XCTAssertEqual(Double(tips[0].y), 151, accuracy: 2)
+        XCTAssertEqual(t.poseOffset, shift)
+    }
+
+    /// Tijdens aanraking + lockout: ook een grote, lokale verandering (hand/schaduw van de arm) telt niet.
+    func testTouchLockout() {
+        let t = tracker()
+        t.touchBegan()
+        var blocked = board
+        for y in 20..<180 { for x in 20..<60 { blocked[x, y] = 20 } }       // arm/schaduw vlak bij de gsm
+        XCTAssertTrue(feed(t, blocked, 5).isEmpty, "tijdens aanraking niets")
+        t.touchEnded()
+        XCTAssertTrue(t.isInTouchLockout)
+        XCTAssertTrue(feed(t, board, 10).isEmpty, "binnen de lockout niets")
+        XCTAssertTrue(feed(t, board, 20).isEmpty)
+        XCTAssertFalse(t.isInTouchLockout, "lockout voorbij na ±21 frames")
+        // Daarna werkt alles weer normaal
+        let ev = feed(t, dart(on: board, tip: (120, 150)), 14)
+        XCTAssertEqual(ev.filter { if case .dart = $0 { return true }; return false }.count, 1)
+    }
+}

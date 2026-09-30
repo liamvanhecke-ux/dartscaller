@@ -10,6 +10,7 @@ struct DartsCallerApp: App {
     var body: some Scene {
         WindowGroup {
             RootView()
+                .reportsTouches(to: camera)          // [TRILLING 1] elke tik → trillings-lockout
                 .environment(camera)
                 .environment(audio)
                 .environment(learning)
