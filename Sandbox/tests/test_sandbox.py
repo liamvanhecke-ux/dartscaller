@@ -260,6 +260,48 @@ def test_run_review_export_pipeline():
         assert st["score_juist"].startswith("1/2"), st
 
 
+def test_hard_negatives_and_augment():
+    """Persoon loopt voorbij met 1 pijl in het bord → negatieven met die pijl gelabeld; augment.py werkt."""
+    with tempfile.TemporaryDirectory() as tmp:
+        tmp = Path(tmp)
+        s = Sim()
+        s.run(20)
+        s.throw((1, 103))
+        for x in range(-260, 900, 40):
+            s.run(1, person(x))
+        s.run(30)
+        video = tmp / "v.avi"
+        vw = cv2.VideoWriter(str(video), cv2.VideoWriter_fourcc(*"MJPG"), FPS, (W, H))
+        for f in s.frames:
+            vw.write(f)
+        vw.release()
+        sess = tmp / "s"
+        sess.mkdir()
+        calibration().save(sess / "calibration.json")
+        out = subprocess.run([sys.executable, str(ROOT / "run.py"), "--source", str(video), "--session", str(sess),
+                              "--no-display", "--hard-negatives", "3"], capture_output=True, text=True)
+        assert out.returncode == 0, out.stderr
+        imgs = sorted((sess / "hard_negatives" / "images").glob("*.jpg"))
+        assert len(imgs) >= 5, out.stdout
+        # Laatste negatief: na de worp → de pijl in het bord moet gelabeld zijn
+        lbl = (sess / "hard_negatives" / "labels" / f"{imgs[-1].stem}.txt").read_text().split()
+        assert lbl.count("4") >= 1 or any(l.startswith("4 ") for l in lbl), lbl
+
+        from review import Session
+        counts = Session(sess).export(tmp / "ds")
+        assert counts["hard_negatives"] == len(imgs), counts
+        neg = tmp / "neg"
+        neg.mkdir()
+        cv2.imwrite(str(neg / "hand.jpg"), s.frames[30])
+        out = subprocess.run([sys.executable, str(ROOT / "augment.py"), "--src", str(tmp / "ds"), "--dst", str(tmp / "aug"),
+                              "--copies", "2", "--negatives", str(neg)], capture_output=True, text=True)
+        assert out.returncode == 0, out.stderr
+        aug_imgs = list((tmp / "aug").rglob("*.jpg"))
+        assert len(aug_imgs) == len(imgs) * 3 + 3, (len(aug_imgs), out.stdout)
+        assert (tmp / "aug" / "background" / "labels" / "bg_hand_0.txt").read_text() == ""
+        assert "background/images" in (tmp / "aug" / "data.yaml").read_text()
+
+
 if __name__ == "__main__":
     tests = [v for k, v in dict(globals()).items() if k.startswith("test_")]
     failed = 0

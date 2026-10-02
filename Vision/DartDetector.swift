@@ -17,11 +17,21 @@ final class DartDetector {
 
     enum Source: String { case custom = "Eigen model", bundled = "Meegeleverd model" }
 
+    /// NMS-instellingen van het model (zitten als invoer in het geëxporteerde .mlpackage).
+    struct Thresholds {
+        /// Laag houden: de multi-frame consensus filtert de twijfelgevallen er toch uit.
+        var confidence = 0.20
+        /// HOOG voor pijlen dicht bij elkaar (bv. 3 in T20): keypoint-vakjes overlappen sterk,
+        /// met 0.45 zou NMS de tweede pijl wegfilteren. Dubbele detecties van dezelfde pijl
+        /// worden daarna samengevoegd binnen 6 px (YoloInterpreter.dartTips).
+        var iou = 0.65
+    }
+
     let labels: YoloInterpreter.Labels
     let source: Source
     private let model: VNCoreMLModel
 
-    init?(labels: YoloInterpreter.Labels = .init()) {
+    init?(labels: YoloInterpreter.Labels = .init(), thresholds: Thresholds = .init()) {
         let custom = Self.customModelURL
         let url: URL
         if FileManager.default.fileExists(atPath: custom.path) {
@@ -37,6 +47,10 @@ final class DartDetector {
         config.computeUnits = .all                     // Neural Engine waar mogelijk
         guard let ml = try? MLModel(contentsOf: url, configuration: config),
               let vn = try? VNCoreMLModel(for: ml) else { return nil }
+        vn.featureProvider = try? MLDictionaryFeatureProvider(dictionary: [
+            "confidenceThreshold": thresholds.confidence,
+            "iouThreshold": thresholds.iou,
+        ])
         self.labels = labels
         self.model = vn
     }

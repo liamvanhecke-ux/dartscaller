@@ -43,6 +43,20 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     private var _modelSource: DartDetector.Source?
     /// Punten (mm) van de pijlen die deze beurt al in het bord zitten — zodat YOLO de NIEUWE pijl kiest.
     private var dartsInBoardMM: [CGPoint] = []
+
+    /// [CONSENSUS] Pijl die door het verschilbeeld gevonden is en wacht op YOLO-bevestiging
+    /// in 3 opeenvolgende beelden (binnen 5 px).
+    private struct PendingDart {
+        var hintMM: CGPoint
+        var capture: FrameCapture?
+        var consensus = DetectionConsensus()
+    }
+    private var pending: PendingDart?
+    /// Instelbaar: aantal beelden en straal (pixels in de modeluitsnede).
+    var consensusFrames = 3
+    var consensusRadiusPx = 5.0
+
+    private var refineRequest: (points: [CGPoint], completion: @MainActor (BoardRefiner.Result?) -> Void)?
     private var stage: Stage = .idle
     private var calibration: BoardCalibration?
     private var frameIndex = 0
@@ -163,6 +177,14 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
             DispatchQueue.main.async { MainActor.assumeIsolated { request(cg, size) } }
         }
 
+        // Automatische kalibratie-verfijning (op verzoek van de setup; werkt in elke fase)
+        if let req = refineRequest {
+            refineRequest = nil
+            let rgba = renderer.rgba(image, rect: CGRect(origin: .zero, size: size), targetWidth: 1080)
+            let result = BoardRefiner.refine(image: rgba, rough: req.points, imageSize: size)
+            DispatchQueue.main.async { MainActor.assumeIsolated { req.completion(result) } }
+        }
+
         switch stage {
         case .idle:
             return
@@ -214,6 +236,10 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
             person = personNearBoard(pixelBuffer, roi: cal.roi, size: size)
         }
 
+        // [CONSENSUS] Wachtende pijl: YOLO op dit beeld, tot 3 beelden overeenkomen.
+        pendingStartedThisFrame = false
+        if pending != nil { stepPending(image, cal: cal) }
+
         let roi = cal.roi
         let motion = renderer.gray(image, rect: roi, targetWidth: motionWidth)
         let events = tracker.process(
@@ -230,20 +256,19 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
                 let (w, h) = FrameRenderer.outputSize(for: roi, targetWidth: analysisWidth)
                 let diffPoint = CGPoint(x: roi.minX + tip.x * roi.width / CGFloat(w),
                                         y: roi.minY + tip.y * roi.height / CGFloat(h))
-                var mm = cal.toBoard.apply(diffPoint)
-                var byModel = false
-                // 2. YOLO: exacte positie van de punt van díe pijl.
-                let crop = renderer.cgImage(image, rect: roi, targetWidth: modelInputWidth)
-                if let crop, let modelMM = modelDartPoint(crop, cal: cal, hintMM: mm) {
-                    mm = modelMM
-                    byModel = true
-                }
-                dartsInBoardMM.append(mm)
-                let capture = crop.map { FrameCapture(image: $0, roi: roi, boardToImage: cal.toImage) }
-                emit(.dart(BoardGeometry.hit(at: mm), imagePoint: cal.toImage.apply(mm), byModel: byModel, capture: capture))
+                flushPending(cal)                         // vorige pijl nog niet bevestigd? eerst afronden
+                var c = DetectionConsensus()
+                c.requiredFrames = consensusFrames
+                c.radius = consensusRadiusPx
+                pending = PendingDart(hintMM: cal.toBoard.apply(diffPoint), capture: nil, consensus: c)
+                // 2. YOLO op dit en de volgende beelden; pas bij consensus wordt de pijl gemeld.
+                stepPending(image, cal: cal)
+                pendingStartedThisFrame = true
             case .playerAtBoard(let n, let locked, let reason):
+                flushPending(cal)
                 emit(.playerAtBoard(dartsCounted: n, wasLocked: locked, reason: reason))
             case .boardCleared:
+                flushPending(cal)
                 dartsInBoardMM = []
                 emit(.boardCleared)
             case .personLeft(let n):
@@ -252,6 +277,56 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
                 emit(.ignored(reason: reason))
             }
         }
+    }
+
+    private var pendingStartedThisFrame = false
+
+    /// Eén consensus-stap: YOLO op dit beeld. Bij 3× dezelfde plek (±5 px) → pijl melden.
+    /// Geen model, of geen consensus na 6 beelden → het punt uit het verschilbeeld gebruiken.
+    private func stepPending(_ image: CIImage, cal: BoardCalibration) {
+        guard var p = pending, !pendingStartedThisFrame else { return }
+        let crop = renderer.cgImage(image, rect: cal.roi, targetWidth: modelInputWidth)
+        if p.capture == nil, let crop {
+            p.capture = FrameCapture(image: crop, roi: cal.roi, boardToImage: cal.toImage)
+        }
+        guard detector != nil, let crop else {
+            pending = p
+            finishPending(mm: p.hintMM, byModel: false, cal: cal)
+            return
+        }
+        let scale = CGFloat(crop.width) / cal.roi.width        // beeldpixels → uitsnede-pixels
+        var candidates: [CGPoint] = []
+        if let mm = modelDartPoint(crop, cal: cal, hintMM: p.hintMM) {
+            let full = cal.toImage.apply(mm)
+            candidates.append(CGPoint(x: (full.x - cal.roi.minX) * scale, y: (full.y - cal.roi.minY) * scale))
+        }
+        if let agreed = p.consensus.add(candidates) {
+            let full = CGPoint(x: cal.roi.minX + agreed.x / scale, y: cal.roi.minY + agreed.y / scale)
+            pending = p
+            finishPending(mm: cal.toBoard.apply(full), byModel: true, cal: cal)
+        } else if p.consensus.isExhausted {
+            pending = p
+            finishPending(mm: p.hintMM, byModel: false, cal: cal)   // YOLO niet stabiel → verschilbeeld
+        } else {
+            pending = p
+        }
+    }
+
+    private func flushPending(_ cal: BoardCalibration) {
+        guard let p = pending else { return }
+        finishPending(mm: p.hintMM, byModel: false, cal: cal)
+    }
+
+    private func finishPending(mm: CGPoint, byModel: Bool, cal: BoardCalibration) {
+        guard let p = pending else { return }
+        pending = nil
+        dartsInBoardMM.append(mm)
+        emit(.dart(BoardGeometry.hit(at: mm), imagePoint: cal.toImage.apply(mm), byModel: byModel, capture: p.capture))
+    }
+
+    /// Automatische verfijning van de kalibratie op het volgende camerabeeld. Completion op main.
+    func refineCalibration(_ points: [CGPoint], completion: @escaping @MainActor (BoardRefiner.Result?) -> Void) {
+        queue.async { self.refineRequest = (points, completion) }
     }
 
     /// Draait het YOLO-model op de bord-uitsnede en kiest de punt van de nieuwe pijl.

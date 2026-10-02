@@ -7,6 +7,7 @@ struct NewGameView: View {
     @AppStorage("game.doubleOut") private var doubleOut = true
     @AppStorage("game.bullOff") private var useBullOff = true
     @AppStorage("game.camera") private var useCamera = true
+    @AppStorage("game.training") private var trainingMode = false
 
     /// Gekozen spelers in speelvolgorde.
     @State private var selectedIDs: [UUID] = []
@@ -72,6 +73,14 @@ struct NewGameView: View {
                             .font(.caption).foregroundStyle(.secondary)
                     }
                 }
+                Toggle(isOn: $trainingMode) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text("AI-trainingsmodus")
+                        Text("Na elke beurt: klopt het? Elke beurt wordt trainingsdata voor een beter model.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+                .disabled(!useCamera)
             }
 
             Section {
@@ -107,7 +116,8 @@ struct NewGameView: View {
             startScore: startScore,
             doubleOut: doubleOut,
             bullOff: useBullOff && selected.count >= 2,
-            useCamera: useCamera)
+            useCamera: useCamera,
+            trainingMode: useCamera && trainingMode)
     }
 }
 

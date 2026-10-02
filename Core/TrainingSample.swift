@@ -40,9 +40,24 @@ enum TrainingLabelMaker {
     /// (een pijl zonder eindlabel → onbetrouwbaar, niet gebruiken).
     static func yoloLines(for sample: TrainingSample, labels: [UUID: DartLabel], box: Double = 0.025) -> [String]? {
         guard sample.roi.count == 4, sample.boardToImage.count == 9, sample.width > 0, sample.height > 0 else { return nil }
-        let toImage = Homography(matrix: sample.boardToImage)
-        let rx = sample.roi[0], ry = sample.roi[1], rw = sample.roi[2], rh = sample.roi[3]
+        var darts: [CGPoint] = []
+        for id in sample.dartIDs {
+            switch labels[id] {
+            case .none: return nil                       // onvolledig gelabeld → niet gebruiken
+            case .notADart: continue
+            case .point(let x, let y, _): darts.append(CGPoint(x: x, y: y))
+            }
+        }
+        return yoloLines(roi: sample.roi, boardToImage: sample.boardToImage, dartsMM: darts, box: box)
+    }
 
+    /// YOLO-labels voor een bord-uitsnede: de 6 kalibratiepunten + de gegeven pijlen (mm).
+    /// - roi: uitsnede in het volledige beeld (x, y, w, h)
+    /// - boardToImage: homografie mm → volledig beeld (9 waarden)
+    static func yoloLines(roi: [Double], boardToImage: [Double], dartsMM: [CGPoint], box: Double = 0.025) -> [String] {
+        guard roi.count == 4, boardToImage.count == 9, roi[2] > 0, roi[3] > 0 else { return [] }
+        let toImage = Homography(matrix: boardToImage)
+        let rx = roi[0], ry = roi[1], rw = roi[2], rh = roi[3]
         func normalized(_ mm: CGPoint) -> (Double, Double)? {
             let p = toImage.apply(mm)
             let nx = (Double(p.x) - rx) / rw, ny = (Double(p.y) - ry) / rh
@@ -51,29 +66,27 @@ enum TrainingLabelMaker {
         func line(_ cls: Int, _ p: (Double, Double)) -> String {
             String(format: "%d %.6f %.6f %.6f %.6f", cls, p.0, p.1, box, box)
         }
-
         var lines: [String] = []
         for cls in calibrationAngles.keys.sorted() {
             let a = calibrationAngles[cls]! * .pi / 180
-            let mm = CGPoint(x: BoardGeometry.doubleOutR * cos(a), y: BoardGeometry.doubleOutR * sin(a))
-            if let p = normalized(mm) { lines.append(line(cls, p)) }
-        }
-        for id in sample.dartIDs {
-            switch labels[id] {
-            case .none:
-                return nil
-            case .notADart:
-                continue
-            case .point(let x, let y, _):
-                if let p = normalized(CGPoint(x: x, y: y)) { lines.append(line(dartClass, p)) }
+            if let p = normalized(CGPoint(x: BoardGeometry.doubleOutR * cos(a), y: BoardGeometry.doubleOutR * sin(a))) {
+                lines.append(line(cls, p))
             }
+        }
+        for d in dartsMM {
+            if let p = normalized(d) { lines.append(line(dartClass, p)) }
         }
         return lines
     }
 
-    static var datasetYAML: String {
-        var s = "# Gemaakt door DartsCaller tijdens het spelen. Train met: python train.py (map Training/)\n"
-        s += "train: images/train\nval: images/train\nnames:\n"   // geen 'path': Ultralytics gebruikt dan de map van dit bestand
+    static var datasetYAML: String { datasetYAML(imageDirs: ["images/train"]) }
+
+    /// data.yaml met één of meer beeldmappen (relatief t.o.v. dit bestand).
+    static func datasetYAML(imageDirs: [String]) -> String {
+        var s = "# Gemaakt door DartsCaller. Train met: python train.py --data <deze map>/data.yaml (map Training/)\n"
+        s += "train:\n" + imageDirs.map { "  - \($0)\n" }.joined()
+        s += "val:\n" + imageDirs.map { "  - \($0)\n" }.joined()     // geen 'path': Ultralytics gebruikt de map van dit bestand
+        s += "names:\n"
         for (i, n) in classNames.enumerated() { s += "  \(i): '\(n)'\n" }
         return s
     }

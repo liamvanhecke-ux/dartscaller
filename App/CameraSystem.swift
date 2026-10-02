@@ -31,6 +31,35 @@ final class CameraSystem {
     private(set) var calibration: BoardCalibration? = nil
     /// De 4 punten zijn door het YOLO-model gevonden (gebruiker bevestigt enkel).
     private(set) var pointsFoundByModel = false
+
+    /// Resultaat van de automatische verfijning (randpunten + bull).
+    struct RefineInfo: Equatable {
+        let edgePoints: Int
+        let rmsErrorPx: Double
+        let bullOffsetMM: Double?
+    }
+    private(set) var refineInfo: RefineInfo? = nil
+    private(set) var isRefining = false
+
+    /// Huidige punten automatisch verfijnen (ook na handmatig slepen).
+    func refineNow() {
+        guard !isRefining, calibrationPoints.count == 4 else { return }
+        isRefining = true
+        pipeline.refineCalibration(calibrationPoints) { [weak self] result in
+            guard let self else { return }
+            self.isRefining = false
+            self.apply(result)
+        }
+    }
+
+    private func apply(_ result: BoardRefiner.Result?) {
+        guard let r = result, r.rmsErrorPx < 3.0 else {
+            refineInfo = nil
+            return
+        }
+        calibrationPoints = r.points
+        refineInfo = RefineInfo(edgePoints: r.edgePoints, rmsErrorPx: r.rmsErrorPx, bullOffsetMM: r.bullOffsetMM)
+    }
     var hasModel: Bool { modelSource != nil }
     /// Welk model de pipeline gebruikt (observeerbaar voor de UI).
     private(set) var modelSource: DartDetector.Source? = nil
@@ -199,18 +228,30 @@ final class CameraSystem {
                 }
                 self.imageSize = size
                 self.pointsFoundByModel = false
+                self.refineInfo = nil
+                // Daarna altijd automatisch verfijnen op de rand van de double-ring + bull.
+                let refineThenShow = { [weak self] in
+                    guard let self else { return }
+                    self.isRefining = true
+                    self.pipeline.refineCalibration(self.calibrationPoints) { [weak self] result in
+                        guard let self, self.step == .focusing else { return }
+                        self.isRefining = false
+                        self.apply(result)
+                        self.step = .calibrating
+                    }
+                }
                 guard self.pipeline.hasModel else {
-                    self.step = .calibrating
+                    refineThenShow()
                     return
                 }
-                // YOLO zoekt de 4 kalibratiepunten; lukt dat niet, dan blijft de schatting staan.
+                // YOLO zoekt de kalibratiepunten; lukt dat niet, dan blijft de schatting staan.
                 self.pipeline.detectCalibration(in: image) { [weak self] points in
                     guard let self, self.step == .focusing else { return }
                     if let points, BoardCalibration(imagePoints: points, imageSize: size) != nil {
                         self.calibrationPoints = points
                         self.pointsFoundByModel = true
                     }
-                    self.step = .calibrating
+                    refineThenShow()
                 }
             }
         }

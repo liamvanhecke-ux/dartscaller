@@ -210,6 +210,18 @@ struct CalibrationView: View {
 
             angleHint
 
+            Button {
+                camera.refineNow()
+            } label: {
+                if camera.isRefining {
+                    HStack { ProgressView().tint(.white); Text("Verfijnen…") }
+                } else {
+                    Label("Verfijn automatisch", systemImage: "scope")
+                }
+            }
+            .buttonStyle(.bordered).tint(.white)
+            .disabled(camera.isRefining)
+
             HStack(spacing: 12) {
                 Button("Opnieuw zoeken") { camera.retrySearch() }
                     .buttonStyle(.bordered).tint(.white)
@@ -231,8 +243,13 @@ struct CalibrationView: View {
 
     @ViewBuilder
     private var angleHint: some View {
-        if camera.pointsFoundByModel {
-            Label("Punten automatisch gevonden door de AI — controleer en bevestig.", systemImage: "sparkles")
+        if let info = camera.refineInfo {
+            Label("Automatisch verfijnd: \(info.edgePoints) meetpunten, fout \(String(format: "%.1f", info.rmsErrorPx)) px"
+                  + (info.bullOffsetMM.map { ", bull ±\(String(format: "%.1f", $0)) mm" } ?? ""),
+                  systemImage: "checkmark.seal.fill")
+                .font(.caption).foregroundStyle(.green)
+        } else if camera.pointsFoundByModel {
+            Label("Punten gevonden door de AI — controleer en bevestig.", systemImage: "sparkles")
                 .font(.caption).foregroundStyle(.cyan)
         }
         if let cal = camera.previewCalibration {

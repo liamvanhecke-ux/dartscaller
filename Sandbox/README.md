@@ -21,7 +21,9 @@ python tests\test_sandbox.py        # moet 8/8 geven
 | 4. Worp per worp beoordelen | `python review.py sessions\s1` |
 | 5. Nauwkeurigheid + drempeladvies | `python review.py sessions\s1 --stats` |
 | 6. Dataset maken | `python review.py sessions\s1 --export dataset` |
-| 7. Model verder trainen | `python ..\Training\train.py --data dataset\data.yaml --epochs 30` |
+| 6b. Harde negatieven meenemen (handen, vliegende pijlen) | bij stap 3: `--hard-negatives 6` |
+| 6c. iPhone-augmentatie (motion blur, ruis, licht, JPEG) | `python augment.py --src dataset --dst dataset_aug --copies 2 --negatives negatieven` |
+| 7. Model verder trainen | `python ..\Training\train.py --data dataset_aug\data.yaml --epochs 30` |
 
 Drempels aanpassen: maak `mijn_config.json`, bv. `{"min_elongation": 3.0, "cooldown_s": 0.8}`, en draai met `--config mijn_config.json`.
 

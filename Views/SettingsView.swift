@@ -84,6 +84,7 @@ struct SettingsView: View {
             Section {
                 Toggle("Trainingsfoto's bewaren", isOn: $learning.collectTrainingData)
                 LabeledContent("Foto's", value: "\(learning.sampleCount) / \(LearningCenter.maxSamples)")
+                LabeledContent("Trainingsmodus", value: "\(learning.positiveCount) klopt · \(learning.needsRetrainingCount) gecorrigeerd")
                 if let export {
                     ShareLink(item: export.url) {
                         Label("Deel dataset (\(export.count) foto's)", systemImage: "square.and.arrow.up")
@@ -101,7 +102,7 @@ struct SettingsView: View {
                             Label("Dataset exporteren", systemImage: "shippingbox")
                         }
                     }
-                    .disabled(learning.sampleCount == 0 || learning.isExporting)
+                    .disabled(learning.sampleCount + learning.positiveCount + learning.needsRetrainingCount == 0 || learning.isExporting)
                 }
                 LabeledContent("AI-model", value: camera.modelSource?.rawValue ?? "Geen — heuristiek")
                 Button { showImporter = true } label: { Label("Hertraind model importeren", systemImage: "square.and.arrow.down") }
@@ -112,7 +113,7 @@ struct SettingsView: View {
                     }
                 }
                 Button("Trainingsfoto's wissen", role: .destructive) { confirmDelete = true }
-                    .disabled(learning.sampleCount == 0)
+                    .disabled(learning.sampleCount + learning.positiveCount + learning.needsRetrainingCount == 0)
             } header: {
                 Text("Zelflerend — model hertrainen")
             } footer: {

@@ -43,4 +43,6 @@ struct GameConfig: Identifiable {
     var doubleOut: Bool
     var bullOff: Bool
     var useCamera: Bool
+    /// AI-trainingsmodus: na elke beurt "Klopt / Foutief" → trainingsdata.
+    var trainingMode: Bool = false
 }

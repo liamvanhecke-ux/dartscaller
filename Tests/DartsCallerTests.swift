@@ -353,6 +353,7 @@ final class ThrowTrackerTests: XCTestCase {
     private func readyTracker(_ config: ThrowTracker.Config? = nil) -> ThrowTracker {
         var c = config ?? ThrowTracker.Config()
         if config == nil { c.cooldownFrames = 5 }        // tests gooien sneller dan mensen
+        c.settleFrames = 8                               // tests voeren 12 beelden per worp
         let t = ThrowTracker(config: c)
         t.cameraSide = Vector2D(dx: 0, dy: 1)
         XCTAssertEqual(feed(t, empty, 30), [.baselineCaptured])
@@ -400,6 +401,7 @@ final class ThrowTrackerTests: XCTestCase {
         var c = ThrowTracker.Config()
         c.idlePollFrames = 30                            // standaard uit (ghost-bron), hier aan
         c.cooldownFrames = 5
+        c.settleFrames = 8
         let t = readyTracker(c)
         feed(t, empty, 5)
         // Simuleer: bewegingsdetectie mist de pijl (motion-beeld blijft leeg), maar het analysebeeld heeft hem.
@@ -664,6 +666,16 @@ final class LearningTests: XCTestCase {
         XCTAssertNil(TrainingLabelMaker.yoloLines(for: sample, labels: [a: .notADart]), "onvolledig gelabeld")
     }
 
+    func testTrainingModeLabels() {
+        let toImage = Homography(matrix: [2, 0, 500, 0, -2, 500, 0, 0, 1])
+        let lines = TrainingLabelMaker.yoloLines(roi: [100, 100, 800, 800], boardToImage: toImage.m,
+                                                 dartsMM: [CGPoint(x: 0, y: 103), CGPoint(x: 0, y: 300)])  // 2e buiten beeld
+        XCTAssertEqual(lines.filter { $0.hasPrefix("4 ") }, ["4 0.500000 0.242500 0.025000 0.025000"])
+        XCTAssertEqual(lines.count, 7)
+        let yaml = TrainingLabelMaker.datasetYAML(imageDirs: ["positives/images", "needs_retraining/images"])
+        XCTAssertTrue(yaml.contains("  - needs_retraining/images") && yaml.contains("4: 'dart'"))
+    }
+
     func testLearnerIsCodable() {
         var l = CorrectionLearner()
         l.observeCorrected(raw: CGPoint(x: 0, y: 95), shown: CGPoint(x: 0, y: 95), correct: .triple(20))
@@ -748,6 +760,7 @@ final class ShakeFilterTests: XCTestCase {
     private func tracker() -> ThrowTracker {
         var c = ThrowTracker.Config()
         c.cooldownFrames = 5
+        c.settleFrames = 8
         let t = ThrowTracker(config: c)
         t.cameraSide = Vector2D(dx: 0, dy: 1)
         for _ in 0..<30 { _ = t.process(motionFrame: board, analysisFrame: { self.board }, personNearBoard: nil) }
@@ -770,6 +783,10 @@ final class ShakeFilterTests: XCTestCase {
     }
 
     /// Statief trilt (hele beeld ±2 px heen en weer) zonder aanraking-melding → geen worp, geen obstructie.
+    func testDefaultSettleIs300ms() {
+        XCTAssertEqual(ThrowTracker.Config().settleFrames, 18, "18 frames ≈ 300 ms bij 60 fps")
+    }
+
     func testTripodShakeIsIgnored() {
         let t = tracker()
         var ev: [ThrowTracker.Event] = []
@@ -813,5 +830,84 @@ final class ShakeFilterTests: XCTestCase {
         // Daarna werkt alles weer normaal
         let ev = feed(t, dart(on: board, tip: (120, 150)), 14)
         XCTAssertEqual(ev.filter { if case .dart = $0 { return true }; return false }.count, 1)
+    }
+}
+
+final class AutoCalibrationTests: XCTestCase {
+
+    /// Ware projectie mm → beeld (schuin van onder, licht gedraaid) voor een 420×420 testbeeld.
+    private func truth(_ p: CGPoint) -> CGPoint {
+        let x = Double(p.x), y = Double(p.y), w = 1 + y * 0.0011 + x * 0.0003
+        let rx = x * cos(0.05) - y * sin(0.05), ry = x * sin(0.05) + y * cos(0.05)
+        return CGPoint(x: 210 + rx * 0.95 / w, y: 205 - ry * 0.88 / w)
+    }
+
+    /// Bord tekenen: elke pixel terugrekenen naar mm en de kleur van dat vak geven.
+    private func render() -> RGBAImage {
+        let W = 420, Hh = 420
+        let H = Homography(from: BoardGeometry.calibrationPointsMM, to: BoardGeometry.calibrationPointsMM.map(truth))!
+        let inv = H.inverse!
+        var px = [UInt8](repeating: 0, count: W * Hh * 4)
+        for y in 0..<Hh { for x in 0..<W {
+            let mm = inv.apply(CGPoint(x: Double(x) + 0.5, y: Double(y) + 0.5))
+            let r = hypot(Double(mm.x), Double(mm.y))
+            var c: (UInt8, UInt8, UInt8) = (150, 120, 90)                       // houten muur
+            if r <= 225 { c = (25, 25, 25) }                                     // nummerring
+            if r <= 170 {
+                let hit = BoardGeometry.hit(at: mm)
+                let i = BoardGeometry.order.firstIndex(of: hit.segment) ?? 0
+                let even = i % 2 == 0
+                switch (hit.segment, hit.multiplier) {
+                case (25, 2): c = (200, 40, 40)
+                case (25, 1): c = (40, 140, 60)
+                case (_, 2), (_, 3): c = even ? (200, 40, 40) : (40, 140, 60)
+                default: c = even ? (30, 30, 30) : (225, 215, 190)
+                }
+            }
+            let i = 4 * (y * W + x)
+            px[i] = c.0; px[i + 1] = c.1; px[i + 2] = c.2; px[i + 3] = 255
+        } }
+        return RGBAImage(width: W, height: Hh, pixels: px)
+    }
+
+    func testRefinesSloppyCalibration() {
+        let img = render()
+        let exact = BoardGeometry.calibrationPointsMM.map(truth)
+        // Slordig aangetikt / ruw geschat: elk punt 5–8 px ernaast
+        let offsets = [(6.0, -5.0), (-7.0, 4.0), (5.0, 7.0), (-6.0, -6.0)]
+        let rough = zip(exact, offsets).map { CGPoint(x: Double($0.x) + $1.0, y: Double($0.y) + $1.1) }
+        let roughErr = zip(rough, exact).map { hypot(Double($0.x - $1.x), Double($0.y - $1.y)) }.max()!
+
+        let res = try! XCTUnwrap(BoardRefiner.refine(image: img, rough: rough, imageSize: CGSize(width: 420, height: 420)))
+        let err = zip(res.points, exact).map { hypot(Double($0.x - $1.x), Double($0.y - $1.y)) }.max()!
+        XCTAssertGreaterThanOrEqual(res.edgePoints, 40)
+        XCTAssertLessThan(err, 1.5, "verfijnd: \(err) px (ruw: \(roughErr) px)")
+        XCTAssertLessThan(try! XCTUnwrap(res.bullOffsetMM), 2.0, "bull klopt met de kalibratie")
+        // Scoren met de verfijnde kalibratie: een punt vlak bij de treble-rand wordt nu juist geteld
+        let cal = try! XCTUnwrap(BoardCalibration(imagePoints: res.points, imageSize: CGSize(width: 420, height: 420)))
+        for (mm, label) in [(CGPoint(x: 0, y: 100.5), "T20"), (CGPoint(x: 164, y: 1), "D6"), (CGPoint(x: -1, y: -105.5), "T3")] {
+            XCTAssertEqual(BoardGeometry.hit(at: cal.toBoard.apply(truth(mm))).shortLabel, label)
+        }
+    }
+
+    func testRefuseWhenNoBoard() {
+        let gray = RGBAImage(width: 200, height: 200, pixels: [UInt8](repeating: 128, count: 200 * 200 * 4))
+        let rough = BoardGeometry.calibrationPointsMM.map { CGPoint(x: 100 + Double($0.x) * 0.5, y: 100 - Double($0.y) * 0.5) }
+        XCTAssertNil(BoardRefiner.refine(image: gray, rough: rough, imageSize: CGSize(width: 200, height: 200)))
+    }
+
+    func testConsensusThreeFrames() {
+        var c = DetectionConsensus()
+        XCTAssertNil(c.add([CGPoint(x: 100, y: 100), CGPoint(x: 40, y: 40)]))
+        XCTAssertNil(c.add([CGPoint(x: 102, y: 101)]))
+        let p = try! XCTUnwrap(c.add([CGPoint(x: 101, y: 99)]))
+        XCTAssertEqual(Double(p.x), 101, accuracy: 0.01)
+
+        var hand = DetectionConsensus()                       // hand/schaduw: springt rond
+        _ = hand.add([CGPoint(x: 50, y: 50)])
+        _ = hand.add([CGPoint(x: 70, y: 52)])
+        XCTAssertNil(hand.add([CGPoint(x: 90, y: 55)]))
+        _ = hand.add([]); _ = hand.add([]); _ = hand.add([])
+        XCTAssertTrue(hand.isExhausted)
     }
 }

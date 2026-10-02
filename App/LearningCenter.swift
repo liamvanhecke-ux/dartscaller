@@ -31,6 +31,9 @@ final class LearningCenter {
     private(set) var learner: CorrectionLearner
     private(set) var sampleCount = 0
     private(set) var isExporting = false
+    /// AI-trainingsmodus: door de speler bevestigde / gecorrigeerde beurten.
+    private(set) var positiveCount = 0
+    private(set) var needsRetrainingCount = 0
 
     static let maxSamples = 1500
 
@@ -54,6 +57,8 @@ final class LearningCenter {
         labels = Self.load([UUID: DartLabel].self, from: Self.labelsURL) ?? [:]
         sampleCount = (try? FileManager.default.contentsOfDirectory(atPath: Self.samplesURL.path)
             .filter { $0.hasSuffix(".json") }.count) ?? 0
+        positiveCount = Self.countImages(in: Self.trainingModeURL(verified: true))
+        needsRetrainingCount = Self.countImages(in: Self.trainingModeURL(verified: false))
     }
 
     // MARK: - Tijdens het spel
@@ -126,6 +131,48 @@ final class LearningCenter {
         }
     }
 
+    // MARK: - AI-trainingsmodus
+
+    /// Eén beurt uit de trainingsmodus opslaan.
+    /// - verified: true = "Klopt helemaal" → Positives/, false = gecorrigeerd → Needs_Retraining/
+    /// - dartsMM: posities (mm) van ALLE pijlen in het bord op deze foto (missers niet).
+    func saveTrainingTurn(capture: FrameCapture, dartsMM: [CGPoint], verified: Bool) {
+        let roi = [Double(capture.roi.minX), Double(capture.roi.minY), Double(capture.roi.width), Double(capture.roi.height)]
+        let lines = TrainingLabelMaker.yoloLines(roi: roi, boardToImage: capture.boardToImage.m, dartsMM: dartsMM)
+        let dir = Self.trainingModeURL(verified: verified)
+        let name = "\(Self.stamp())_\(UUID().uuidString.prefix(6))"
+        let image = capture.image
+        if verified { positiveCount += 1 } else { needsRetrainingCount += 1 }
+        io.async {
+            let fm = FileManager.default
+            let images = dir.appendingPathComponent("images"), labels = dir.appendingPathComponent("labels")
+            try? fm.createDirectory(at: images, withIntermediateDirectories: true)
+            try? fm.createDirectory(at: labels, withIntermediateDirectories: true)
+            let jpg = images.appendingPathComponent("\(name).jpg")
+            guard let dest = CGImageDestinationCreateWithURL(jpg as CFURL, UTType.jpeg.identifier as CFString, 1, nil) else { return }
+            CGImageDestinationAddImage(dest, image, [kCGImageDestinationLossyCompressionQuality: 0.92] as CFDictionary)
+            guard CGImageDestinationFinalize(dest) else { return }
+            try? (lines.joined(separator: "\n") + "\n").write(to: labels.appendingPathComponent("\(name).txt"),
+                                                            atomically: true, encoding: .utf8)
+        }
+    }
+
+    nonisolated static func trainingModeURL(verified: Bool) -> URL {
+        baseURL.appendingPathComponent("TrainingMode/\(verified ? "Positives" : "Needs_Retraining")", isDirectory: true)
+    }
+
+    nonisolated private static func countImages(in dir: URL) -> Int {
+        (try? FileManager.default.contentsOfDirectory(atPath: dir.appendingPathComponent("images").path)
+            .filter { $0.hasSuffix(".jpg") }.count) ?? 0
+    }
+
+    nonisolated private static func stamp() -> String {
+        let f = DateFormatter()
+        f.dateFormat = "yyyyMMdd_HHmmss"
+        f.locale = Locale(identifier: "en_US_POSIX")
+        return f.string(from: Date())
+    }
+
     func resetLearning() {
         learner.reset()
         persistLearner()
@@ -134,10 +181,14 @@ final class LearningCenter {
     func deleteTrainingData() {
         labels = [:]
         sampleCount = 0
+        positiveCount = 0
+        needsRetrainingCount = 0
         let url = Self.samplesURL, labelsURL = Self.labelsURL
+        let tm = Self.baseURL.appendingPathComponent("TrainingMode")
         io.async {
             try? FileManager.default.removeItem(at: url)
             try? FileManager.default.removeItem(at: labelsURL)
+            try? FileManager.default.removeItem(at: tm)
         }
     }
 
@@ -182,7 +233,21 @@ final class LearningCenter {
                                                      atomically: true, encoding: .utf8)
             count += 1
         }
-        try? TrainingLabelMaker.datasetYAML.write(to: folder.appendingPathComponent("data.yaml"), atomically: true, encoding: .utf8)
+        // AI-trainingsmodus: Positives/ en Needs_Retraining/ als aparte mappen (zelfde YOLO-structuur)
+        var dirs = count > 0 ? ["images/train"] : []
+        for (verified, sub) in [(true, "positives"), (false, "needs_retraining")] {
+            let src = trainingModeURL(verified: verified)
+            guard let files = try? fm.contentsOfDirectory(atPath: src.appendingPathComponent("images").path),
+                  !files.isEmpty else { continue }
+            let dst = folder.appendingPathComponent(sub)
+            try? fm.createDirectory(at: dst, withIntermediateDirectories: true)
+            try? fm.copyItem(at: src.appendingPathComponent("images"), to: dst.appendingPathComponent("images"))
+            try? fm.copyItem(at: src.appendingPathComponent("labels"), to: dst.appendingPathComponent("labels"))
+            count += files.filter { $0.hasSuffix(".jpg") }.count
+            dirs.append("\(sub)/images")
+        }
+        try? TrainingLabelMaker.datasetYAML(imageDirs: dirs)
+            .write(to: folder.appendingPathComponent("data.yaml"), atomically: true, encoding: .utf8)
         guard count > 0 else { return nil }
 
         // Zip maken met de ingebouwde Files-functie (geen externe library nodig).

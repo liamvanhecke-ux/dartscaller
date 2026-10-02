@@ -38,7 +38,7 @@ struct GameView: View {
         .navigationBarTitleDisplayMode(.inline)
         .toolbar {
             ToolbarItem(placement: .principal) {
-                Text("\(engine.startScore) · \(engine.doubleOut ? "Double-out" : "Single-out")")
+                Text("\(engine.startScore) · \(session.isTrainingMode ? "AI-training" : (engine.doubleOut ? "Double-out" : "Single-out"))")
                     .font(.subheadline.weight(.semibold))
                     .foregroundStyle(.secondary)
             }
@@ -55,6 +55,9 @@ struct GameView: View {
             }
         }
         .sheet(isPresented: $showHistory) { TurnHistorySheet(session: session) }
+        .sheet(item: Binding(get: { session.pendingFeedback }, set: { _ in })) { feedback in
+            TrainingFeedbackSheet(session: session, feedback: feedback)
+        }
         .sheet(isPresented: Binding(get: { session.stage == .finished }, set: { _ in })) {
             GameOverView(session: session, onExit: onExit, onRematch: onRematch)
         }

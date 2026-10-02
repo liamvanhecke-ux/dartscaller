@@ -44,7 +44,7 @@ enum YoloInterpreter {
 
     /// Alle pijlpunten, dubbele detecties (binnen `mergeDistance` px) samengevoegd.
     static func dartTips(_ detections: [Detection], labels: Labels = Labels(),
-                         minConfidence: Double = 0.3, mergeDistance: Double = 6) -> [Detection] {
+                         minConfidence: Double = 0.2, mergeDistance: Double = 6) -> [Detection] {
         let darts = detections
             .filter { labels.dart.contains($0.label) && $0.confidence >= minConfidence }
             .sorted { $0.confidence > $1.confidence }

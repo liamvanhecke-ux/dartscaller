@@ -18,7 +18,7 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent))
 from dartvision.geometry import MANUAL_ORDER, BoardCalibration          # noqa: E402
-from dartvision.logger import SessionLogger                             # noqa: E402
+from dartvision.logger import HardNegativeSaver, SessionLogger          # noqa: E402
 from dartvision.state_machine import Config, State, ThrowStateMachine   # noqa: E402
 
 STATE_COLORS = {State.NEEDS_BASELINE: (160, 160, 160), State.IDLE: (80, 200, 80), State.MOTION: (0, 200, 255),
@@ -66,6 +66,8 @@ def main() -> None:
     ap.add_argument("--config", help="JSON met aangepaste drempels (zie Config)")
     ap.add_argument("--calibration", help="bestaand calibration.json hergebruiken")
     ap.add_argument("--no-display", action="store_true", help="zonder venster (sneller)")
+    ap.add_argument("--hard-negatives", type=int, default=0, metavar="N",
+                    help="elke N-de frame tijdens beweging/obstructie bewaren als negatief voorbeeld (0 = uit)")
     args = ap.parse_args()
 
     cap = open_source(args.source)
@@ -100,6 +102,7 @@ def main() -> None:
     cfg = Config(**json.loads(Path(args.config).read_text())) if args.config else Config()
     sm = ThrowStateMachine(cal, cfg, detector)
     logger = SessionLogger(session, cal, cfg, sm.roi, args.source)
+    hard_neg = HardNegativeSaver(session, cal, sm.roi, every_n=args.hard_negatives) if args.hard_negatives > 0 else None
     fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
     is_file = not args.source.isdigit() and Path(args.source).exists()
     counts: dict[str, int] = {}
@@ -114,7 +117,11 @@ def main() -> None:
                     break
             frame_no += 1
             t = frame_no / fps if is_file else None      # video: tijd uit framenummer (reproduceerbaar)
-            for ev in sm.process(frame, t):
+            events = sm.process(frame, t)
+            if hard_neg and sm.state in (State.MOTION, State.OBSTRUCTED):
+                x, y, rw, rh = sm.roi
+                hard_neg.offer(frame[y:y + rh, x:x + rw], [d["tip_img"] for d in sm.darts_this_turn], frame_no)
+            for ev in events:
                 counts[ev.kind] = counts.get(ev.kind, 0) + 1
                 folder = logger.log(ev)
                 if ev.kind == "throw":
@@ -150,6 +157,8 @@ def main() -> None:
     if not args.no_display:
         cv2.destroyAllWindows()
     print("\nKlaar. Samenvatting:", counts)
+    if hard_neg:
+        print(f"Harde negatieven bewaard: {hard_neg.count} (in {session / 'hard_negatives'})")
     print(f"Beoordeel nu:  python review.py {session}")
 
 

@@ -112,6 +112,17 @@ class Session:
             shutil.copy(f / "after.jpg", sub / "images" / f"{name}.jpg")
             (sub / "labels" / f"{name}.txt").write_text("\n".join(lines) + "\n")
             counts[folders[verdict]] += 1
+        # Harde negatieven (beweging, handen, vliegende pijlen) uit run.py --hard-negatives
+        hn = self.dir / "hard_negatives"
+        if (hn / "images").exists():
+            for sub in ("images", "labels"):
+                (out / "hard_negatives" / sub).mkdir(parents=True, exist_ok=True)
+            for img in (hn / "images").glob("*.jpg"):
+                name = f"{self.dir.name}_{img.stem}"
+                shutil.copy(img, out / "hard_negatives" / "images" / f"{name}.jpg")
+                lbl = hn / "labels" / f"{img.stem}.txt"
+                (out / "hard_negatives" / "labels" / f"{name}.txt").write_text(lbl.read_text() if lbl.exists() else "")
+                counts["hard_negatives"] += 1
         self._write_yaml(out)
         return counts
 
@@ -136,7 +147,7 @@ class Session:
 
     @staticmethod
     def _write_yaml(out: Path) -> None:
-        dirs = [f"{d}/images" for d in ("confirmed", "misclassifications", "false_positives", "missed")
+        dirs = [f"{d}/images" for d in ("confirmed", "misclassifications", "false_positives", "missed", "hard_negatives")
                 if (out / d / "images").exists()]
         text = "# Gemaakt met review.py — train met: python ../Training/train.py --data <deze map>/data.yaml\n"
         text += f"path: {out.resolve().as_posix()}\ntrain:\n" + "".join(f"  - {d}\n" for d in dirs)

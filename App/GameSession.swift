@@ -34,6 +34,19 @@ final class GameSession {
     private(set) var playerAtBoard = false
     /// Laatste genegeerde kandidaat-worp (voor de statusweergave).
     private(set) var lastIgnored: String?
+
+    /// AI-trainingsmodus: beurt die wacht op "Klopt / Foutief".
+    struct TurnFeedback: Identifiable {
+        let id = UUID()
+        let recordID: TurnRecord.ID
+        let playerName: String
+        let darts: [DartHit]
+        let capture: FrameCapture
+    }
+    private(set) var pendingFeedback: TurnFeedback? = nil
+    /// Laatste camerabeeld van deze beurt (na de laatst gedetecteerde pijl).
+    @ObservationIgnored private var lastCapture: FrameCapture? = nil
+    var isTrainingMode: Bool { config.trainingMode && camera != nil }
     private(set) var toast: String? = nil
     @ObservationIgnored private var toastTask: Task<Void, Never>? = nil
     @ObservationIgnored var statsRecorded = false
@@ -83,6 +96,11 @@ final class GameSession {
         case .turnEnded(let record):
             audio.announceTurn(record, won: engine.phase == .finished, name: engine.seats[record.seatIndex].name)
             camera?.pipeline.lockTurn()
+            if isTrainingMode, engine.phase != .finished, let capture = lastCapture {   // bij winst: eindscherm voorrang
+                pendingFeedback = TurnFeedback(recordID: record.id, playerName: engine.seats[record.seatIndex].name,
+                                               darts: record.darts, capture: capture)
+            }
+            lastCapture = nil
         case .turnCorrected(let record):
             if record.id == engine.records.last?.id {
                 audio.announceCorrection(record, name: engine.seats[record.seatIndex].name)
@@ -102,6 +120,7 @@ final class GameSession {
         switch event {
         case .dart(let hit, _, _, let capture):
             playerAtBoard = false
+            if let capture { lastCapture = capture }
             switch stage {
             case .bullOff:
                 registerBullOff(hit)
@@ -224,6 +243,33 @@ final class GameSession {
             pipeline.resumeTurn(dartsInBoard: engine.turn.count)
         }
     }
+
+    // MARK: - AI-trainingsmodus
+
+    /// "Klopt helemaal": camerabeeld + AI-posities → Positives/.
+    func confirmFeedback() {
+        guard let f = pendingFeedback else { return }
+        let points = f.darts.compactMap { $0.isMiss ? nil : $0.boardPoint }
+        learning?.saveTrainingTurn(capture: f.capture, dartsMM: points, verified: true)
+        learning?.confirm(f.darts)
+        pendingFeedback = nil
+    }
+
+    /// "Foutief": de speler tikte de echte posities aan (mm). Score wordt gecorrigeerd en het
+    /// beeld + correcte annotaties gaan naar Needs_Retraining/.
+    func correctFeedback(pointsMM: [CGPoint]) {
+        guard let f = pendingFeedback else { return }
+        var hits = pointsMM.prefix(3).map { BoardGeometry.hit(at: $0) }
+        while hits.count < 3 { hits.append(.miss) }
+        learning?.saveTrainingTurn(capture: f.capture,
+                                   dartsMM: hits.compactMap { $0.isMiss ? nil : $0.boardPoint }, verified: false)
+        pendingFeedback = nil
+        if !zip(f.darts, hits).allSatisfy({ $0.sameValue(as: $1) }) || f.darts.count != hits.count {
+            amend(f.recordID, darts: hits)
+        }
+    }
+
+    func skipFeedback() { pendingFeedback = nil }
 
     // MARK: - Bull-off
 

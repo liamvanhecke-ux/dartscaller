@@ -56,7 +56,10 @@ final class ThrowTracker {
         /// Voor het vastleggen van het lege bord: kleine lichtflikkering toelaten.
         var baselineMaxMovingPixels = 40
         /// Aantal stilstaande beelden voordat we analyseren (≈130 ms bij 60 fps).
-        var settleFrames = 8
+        /// [STABILITEIT] Zo lang moet het beeld stil zijn vóór analyse + YOLO.
+        /// 18 frames ≈ 300 ms bij 60 fps (handen, schaduwen en vliegende pijlen zijn dan weg).
+        /// Sneller scoren? 12 (200 ms). Nog valse detecties? 24 (400 ms).
+        var settleFrames = 18
         /// Ook zonder waargenomen beweging elke N beelden controleren. nil = uit.
         var idlePollFrames: Int? = nil
         /// Deel van het bewegingsbeeld dat in één frame beweegt → persoon/hand.
