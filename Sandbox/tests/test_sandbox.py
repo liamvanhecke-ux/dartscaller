@@ -204,7 +204,7 @@ def test_cooldown_blocks_double_trigger():
     k = s.kinds()
     assert k.count("throw") == 1 and "ghost" in k, k
     ghost = [e for e in s.events if e.kind == "ghost"][0]
-    assert "binnen cooldown" in ghost.data["reasons"]
+    assert any("binnen cooldown" in r for r in ghost.data["reasons"])
 
 
 def test_run_review_export_pipeline():
@@ -258,6 +258,177 @@ def test_run_review_export_pipeline():
         assert "misclassifications/images" in yaml and "dart" in yaml
         st = rs.stats()
         assert st["score_juist"].startswith("1/2"), st
+
+
+class _StubDetector:
+    """Doet alsof YOLO de echte pijlpunt ziet (met kleine ruis), en telt hoe groot de patches zijn."""
+    def __init__(self, sim, jitter=1.0, wild=False):
+        self.sim, self.jitter, self.wild, self.patch_sizes = sim, jitter, wild, []
+        self.rng = np.random.default_rng(1)
+
+    def detect(self, bgr, imgsz=None, iou=0.65):
+        from dartvision.detector import Detection
+        self.patch_sizes.append(bgr.shape[:2])
+        sm = self.sim.sm
+        x0, y0 = self._origin
+        out = []
+        for d in self.sim.darts:
+            ix, iy = mm_to_img(*d)                                    # volledig beeld
+            k = sm.cfg.yolo_width / sm.roi[2]                          # beeld → yolo-bord
+            px, py = (ix - sm.roi[0]) * k - x0, (iy - sm.roi[1]) * k - y0
+            if self.wild:                                              # hand/schaduw: springt rond
+                px += self.rng.uniform(-30, 30); py += self.rng.uniform(-30, 30)
+            else:
+                px += self.rng.uniform(-self.jitter, self.jitter); py += self.rng.uniform(-self.jitter, self.jitter)
+            if 0 <= px < bgr.shape[1] and 0 <= py < bgr.shape[0]:
+                out.append(Detection("dart", px, py, 0.8))
+        return out
+
+
+def _attach_stub(s, **kw):
+    """Koppel de stub en laat hem de patch-oorsprong kennen (zoals de echte pipeline die doorgeeft)."""
+    stub = _StubDetector(s, **kw)
+    orig = s.sm._yolo_patch
+    def patched(crop, bbox):
+        patch, origin, a2y = orig(crop, bbox)
+        stub._origin = origin
+        return patch, origin, a2y
+    s.sm._yolo_patch = patched
+    s.sm.detector = stub
+    return stub
+
+
+def test_every_rejection_is_logged(caplog=None):
+    """Probleem 1: geen stille afkapping — elke kandidaat eindigt met een gelogde beslissing."""
+    import logging
+    records = []
+    h = logging.Handler(); h.emit = lambda r: records.append(r.getMessage())
+    lg = logging.getLogger("dartvision"); lg.addHandler(h); lg.setLevel(logging.DEBUG)
+    try:
+        s = Sim(); s.run(20)
+        tx, ty = mm_to_img(40, 40)
+        s.run(2, lambda im: cv2.circle(im, (int(tx) - 30, int(ty)), 4, (0, 0, 0), -1))
+        s.run(20, lambda im: cv2.circle(im, (int(tx), int(ty)), 4, (0, 0, 0), -1))      # vlieg
+        s.throw((1, 103))
+    finally:
+        lg.removeHandler(h)
+    steps = {tag for m in records for tag in ("[S1 BEWEGING]", "[S2 STABIEL]", "[S3 VERSCHIL]", "[S4 CONTROLE]",
+                                              "[S5 YOLO]", "[S6 KALIBRATIE]", "[S7 SCORE]", "[BASELINE]") if tag in m}
+    assert len(steps) == 8, steps
+    assert any("✗ GHOST" in m for m in records) and any("🎯 T20" in m for m in records), records[-6:]
+    ghost = [e for e in s.events if e.kind == "ghost"][0]
+    assert ghost.data["trace"] and ghost.data["reasons"], "reden + spoor in het event (ook voor review.py)"
+
+
+def test_hard_shadow_is_rejected():
+    """Probleem 2: harde, langwerpige schaduw (zelfde kleur, donkerder) → twijfel → YOLO ziet geen pijl → ghost."""
+    s = Sim(); s.run(20)
+    _attach_stub(s)                                  # model ziet enkel echte pijlen (hier: geen)
+    s.events = []
+    tx, ty = mm_to_img(-50, 40)
+    def shadow(im):
+        m = np.zeros(im.shape[:2], np.uint8)
+        cv2.line(m, (int(tx), int(ty)), (int(tx) + 10, int(ty) - 75), 255, 6)    # schaduw van een schacht
+        im[m > 0] = (im[m > 0] * 0.55).astype(np.uint8)
+    s.run(2, lambda im: cv2.line(im, (int(tx) - 90, int(ty)), (int(tx) - 60, int(ty) - 20), (240, 240, 240), 3))
+    s.run(20, shadow)
+    k = s.kinds()
+    assert "throw" not in k, (k, s.sm.last_metrics)
+    g = [e for e in s.events if e.kind == "ghost"]
+    assert g and any("schaduw" in r for r in g[0].data["reasons"]), g[0].data if g else k
+
+
+def test_soft_shadow_rejected_without_model():
+    """Zachte schaduw (vage rand) wordt ook zonder model afgekeurd."""
+    s = Sim(); s.run(20)
+    s.events = []
+    tx, ty = mm_to_img(-50, 40)
+    def soft(im):
+        m = np.zeros(im.shape[:2], np.float32)
+        cv2.line(m, (int(tx), int(ty)), (int(tx) + 10, int(ty) - 75), 1.0, 9)
+        m = cv2.GaussianBlur(m, (31, 31), 0)[..., None]
+        im[:] = (im * (1 - 0.5 * m)).astype(np.uint8)
+    s.run(2, lambda im: cv2.line(im, (int(tx) - 90, int(ty)), (int(tx) - 60, int(ty) - 20), (240, 240, 240), 3))
+    s.run(20, soft)
+    assert "throw" not in s.kinds(), (s.kinds(), s.sm.last_metrics)
+
+
+def test_dark_dart_on_cream_is_not_a_shadow():
+    """Een donkergrijze pijl (zelfde tint als het vak, maar scherp) moet gewoon tellen."""
+    s = Sim(); s.run(20)
+    tip = (-60, -40)                                   # crèmekleurig vak (16)
+    tx, ty = mm_to_img(*tip)
+    def dark_dart(im):
+        cv2.line(im, (int(tx), int(ty)), (int(tx) + 6, int(ty) - 70), (70, 85, 95), 3, cv2.LINE_AA)
+        cv2.rectangle(im, (int(tx) - 1, int(ty) - 92), (int(tx) + 13, int(ty) - 70), (60, 70, 80), -1)
+    tx0 = int(tx) - 120
+    s.run(2, lambda im: cv2.line(im, (tx0, int(ty) - 40), (tx0 + 40, int(ty) - 50), (240, 240, 240), 3))
+    s.run(25, dark_dart)
+    throws = [e for e in s.events if e.kind == "throw"]
+    assert len(throws) == 1, (s.kinds(), s.sm.last_metrics)
+    assert math.dist(throws[0].data["tip_mm"], tip) < 8, throws[0].data
+
+    # Met model: YOLO ziet de pijl → ook goedgekeurd
+    s2 = Sim(); s2.run(20)
+    _attach_stub(s2)
+    s2.darts.append(tip)                              # stub "ziet" deze pijl
+    s2.run(2, lambda im: cv2.line(im, (tx0, int(ty) - 40), (tx0 + 40, int(ty) - 50), (240, 240, 240), 3))
+    s2.run(25, dark_dart)
+    t2 = [e for e in s2.events if e.kind == "throw"]
+    assert len(t2) == 1 and t2[0].data["source"] == "yolo", s2.kinds()
+
+
+def test_second_dart_next_to_first():
+    """Probleem 3: baseline correct bijgewerkt → pijl 2 vlak naast pijl 1 wordt apart herkend."""
+    s = Sim(Config(cooldown_s=0.3)); s.run(20)
+    s.throw((1, 103))
+    s.throw((10, 101))                         # 9 mm ernaast, zelfde T20
+    throws = [e for e in s.events if e.kind == "throw"]
+    assert len(throws) == 2, s.kinds()
+    assert all(t.data["label"] == "T20" for t in throws), [t.data["label"] for t in throws]
+    assert math.dist(throws[1].data["tip_mm"], (10, 101)) < 6, throws[1].data["tip_mm"]
+
+
+def test_yolo_on_roi_patch_with_consensus():
+    """Probleem 4: YOLO draait op een kleine patch rond de vlek, en pas na 3× binnen 5 px telt het."""
+    s = Sim(); s.run(20)
+    stub = _attach_stub(s, jitter=1.0)
+    s.throw((25, -100))
+    t = [e for e in s.events if e.kind == "throw"][0]
+    assert t.data["source"] == "yolo", t.data
+    assert t.data["label"] == "T17" and math.dist(t.data["tip_mm"], (25, -100)) < 2, t.data
+    assert len(stub.patch_sizes) == 3, stub.patch_sizes                      # 3 beelden = consensus
+    h, w = stub.patch_sizes[0]
+    assert w % 32 == 0 and w <= 320, (h, w)                                  # klein, i.p.v. hele bord (800)
+
+    s2 = Sim(); s2.run(20)
+    _attach_stub(s2, wild=True)                                              # springt rond → geen consensus
+    s2.throw((1, 103))
+    t2 = [e for e in s2.events if e.kind == "throw"][0]
+    assert "geen YOLO-consensus" in t2.data["source"], t2.data
+
+
+def test_debug_visuals_saved():
+    with tempfile.TemporaryDirectory() as tmp:
+        s = Sim(Config(debug_dir=tmp)); s.run(20)
+        _attach_stub(s)
+        s.throw((1, 103))
+        files = {p.name for p in Path(tmp).rglob("*.png")}
+        assert {"diff.png", "shadow.png", "new_edges.png", "patch.png"} <= files, files
+
+
+def test_tripod_shake_ignored():
+    s = Sim(); s.run(20)
+    s.events = []
+    for i in range(30):
+        dx, dy = [2, -1, 1, -2, 0][i % 5], [1, 0, -2, 1, -1][i % 5]
+        M = np.float32([[1, 0, dx], [0, 1, dy]])
+        s.t += 1 / FPS
+        img = cv2.warpAffine(s.frame(), M, (W, H), borderMode=cv2.BORDER_REPLICATE)
+        s.events += s.sm.process(img, s.t)
+    s.run(30)
+    assert s.kinds() == [] or set(s.kinds()) <= {"ghost"}, s.kinds()
+    assert "player_at_board" not in s.kinds() and "throw" not in s.kinds()
 
 
 def test_hard_negatives_and_augment():

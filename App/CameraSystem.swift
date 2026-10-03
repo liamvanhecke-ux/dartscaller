@@ -41,6 +41,12 @@ final class CameraSystem {
     private(set) var refineInfo: RefineInfo? = nil
     private(set) var isRefining = false
 
+    /// De gebruiker versleept een punt: de melding "automatisch verfijnd/gevonden" klopt dan niet meer.
+    func markEditedByHand() {
+        if refineInfo != nil { refineInfo = nil }
+        if pointsFoundByModel { pointsFoundByModel = false }
+    }
+
     /// Huidige punten automatisch verfijnen (ook na handmatig slepen).
     func refineNow() {
         guard !isRefining, calibrationPoints.count == 4 else { return }
@@ -234,8 +240,9 @@ final class CameraSystem {
                     guard let self else { return }
                     self.isRefining = true
                     self.pipeline.refineCalibration(self.calibrationPoints) { [weak self] result in
-                        guard let self, self.step == .focusing else { return }
-                        self.isRefining = false
+                        guard let self else { return }
+                        self.isRefining = false                 // altijd resetten, ook als de setup afgebroken is
+                        guard self.step == .focusing else { return }
                         self.apply(result)
                         self.step = .calibrating
                     }

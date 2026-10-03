@@ -32,26 +32,31 @@ final class DartDetector {
     private let model: VNCoreMLModel
 
     init?(labels: YoloInterpreter.Labels = .init(), thresholds: Thresholds = .init()) {
-        let custom = Self.customModelURL
-        let url: URL
-        if FileManager.default.fileExists(atPath: custom.path) {
-            url = custom
-            source = .custom
-        } else if let bundled = Bundle.main.url(forResource: Self.modelName, withExtension: "mlmodelc") {
-            url = bundled
-            source = .bundled
-        } else {
-            return nil
+        // Eerst het zelf geïmporteerde model; lukt dat niet (kapot/onvolledig), dan het meegeleverde.
+        var candidates: [(URL, Source)] = []
+        if FileManager.default.fileExists(atPath: Self.customModelURL.path) {
+            candidates.append((Self.customModelURL, .custom))
+        }
+        if let bundled = Bundle.main.url(forResource: Self.modelName, withExtension: "mlmodelc") {
+            candidates.append((bundled, .bundled))
         }
         let config = MLModelConfiguration()
         config.computeUnits = .all                     // Neural Engine waar mogelijk
-        guard let ml = try? MLModel(contentsOf: url, configuration: config),
-              let vn = try? VNCoreMLModel(for: ml) else { return nil }
+        // Eerste model dat laadt (let-eigenschappen pas daarna één keer toewijzen).
+        var loaded: (VNCoreMLModel, Source)?
+        for (url, src) in candidates where loaded == nil {
+            if let ml = try? MLModel(contentsOf: url, configuration: config),
+               let vn = try? VNCoreMLModel(for: ml) {
+                loaded = (vn, src)
+            }
+        }
+        guard let (vn, src) = loaded else { return nil }
         vn.featureProvider = try? MLDictionaryFeatureProvider(dictionary: [
             "confidenceThreshold": thresholds.confidence,
             "iouThreshold": thresholds.iou,
         ])
         self.labels = labels
+        self.source = src
         self.model = vn
     }
 

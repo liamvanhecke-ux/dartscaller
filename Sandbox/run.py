@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import logging
 import sys
 from pathlib import Path
 
@@ -22,7 +23,8 @@ from dartvision.logger import HardNegativeSaver, SessionLogger          # noqa: 
 from dartvision.state_machine import Config, State, ThrowStateMachine   # noqa: E402
 
 STATE_COLORS = {State.NEEDS_BASELINE: (160, 160, 160), State.IDLE: (80, 200, 80), State.MOTION: (0, 200, 255),
-                State.IMPACT: (0, 140, 255), State.OBSTRUCTED: (60, 60, 230), State.COOLDOWN: (200, 160, 60)}
+                State.IMPACT: (0, 140, 255), State.CONFIRM: (255, 200, 0), State.OBSTRUCTED: (60, 60, 230),
+                State.COOLDOWN: (200, 160, 60)}
 
 
 def open_source(src: str) -> cv2.VideoCapture:
@@ -66,10 +68,15 @@ def main() -> None:
     ap.add_argument("--config", help="JSON met aangepaste drempels (zie Config)")
     ap.add_argument("--calibration", help="bestaand calibration.json hergebruiken")
     ap.add_argument("--no-display", action="store_true", help="zonder venster (sneller)")
+    ap.add_argument("--log", default="info", choices=["debug", "info", "warning"],
+                    help="debug = elke stap, info = enkel beslissingen (standaard)")
+    ap.add_argument("--debug-visuals", action="store_true",
+                    help="tussenbeelden (verschil, schaduw, randen, YOLO-patch) opslaan in <sessie>/debug/")
     ap.add_argument("--hard-negatives", type=int, default=0, metavar="N",
                     help="elke N-de frame tijdens beweging/obstructie bewaren als negatief voorbeeld (0 = uit)")
     args = ap.parse_args()
 
+    logging.basicConfig(level=getattr(logging, args.log.upper()), format="%(message)s")
     cap = open_source(args.source)
     ok, first = cap.read()
     if not ok:
@@ -100,6 +107,8 @@ def main() -> None:
         cal.save(session / "calibration.json")
 
     cfg = Config(**json.loads(Path(args.config).read_text())) if args.config else Config()
+    if args.debug_visuals:
+        cfg.debug_dir = str(session / "debug")
     sm = ThrowStateMachine(cal, cfg, detector)
     logger = SessionLogger(session, cal, cfg, sm.roi, args.source)
     hard_neg = HardNegativeSaver(session, cal, sm.roi, every_n=args.hard_negatives) if args.hard_negatives > 0 else None

@@ -120,12 +120,13 @@ final class GameSession {
         switch event {
         case .dart(let hit, _, _, let capture):
             playerAtBoard = false
-            if let capture { lastCapture = capture }
             switch stage {
             case .bullOff:
                 registerBullOff(hit)
             case .playing:
                 guard engine.phase == .throwing else { break }
+                // Enkel een pijl die echt meetelt levert de foto voor de trainingsmodus
+                if let capture { lastCapture = capture }
                 // Geleerde correctie toepassen + beeld bewaren voor training
                 let dart = learning?.adjust(hit, capture: capture, dartsInBoard: engine.turn) ?? hit
                 engine.register(dart)
@@ -338,6 +339,7 @@ final class GameSession {
                            startScore: config.startScore, doubleOut: config.doubleOut)
         wireEngine()
         stage = .playing
+        lastCapture = nil
         camera?.pipeline.startGameMode()
     }
 

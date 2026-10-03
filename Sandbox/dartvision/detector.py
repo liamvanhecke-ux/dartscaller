@@ -23,8 +23,10 @@ class DartDetector:
         self.conf, self.imgsz = conf, imgsz
         self.names = self.model.names
 
-    def detect(self, bgr: np.ndarray) -> list[Detection]:
-        r = self.model.predict(bgr, imgsz=self.imgsz, conf=self.conf, verbose=False)[0]
+    def detect(self, bgr: np.ndarray, imgsz: int | None = None, iou: float = 0.65) -> list[Detection]:
+        """imgsz=None → standaard (800). Voor een ROI-patch: geef de patchgrootte (veelvoud van 32),
+        dan blijft de pijl even groot als tijdens training (geen op-/afschalen)."""
+        r = self.model.predict(bgr, imgsz=imgsz or self.imgsz, conf=self.conf, iou=iou, verbose=False)[0]
         out = []
         for c, xywh, cf in zip(r.boxes.cls.tolist(), r.boxes.xywh.tolist(), r.boxes.conf.tolist()):
             out.append(Detection(self.names[int(c)], float(xywh[0]), float(xywh[1]), float(cf)))

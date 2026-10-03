@@ -37,6 +37,8 @@ final class CallerAudioManager {
 
     private let synth = AVSpeechSynthesizer()
     private var voice: AVSpeechSynthesisVoice?
+    /// Zet de audiosessie (muziek zachter) enkel aan TIJDENS het spreken.
+    private let sessionKeeper = SpeechSessionKeeper()
 
     init() {
         let d = UserDefaults.standard
@@ -47,9 +49,10 @@ final class CallerAudioManager {
         chosenVoiceID = d.string(forKey: "caller.voice")
         voice = Self.voice(for: d.string(forKey: "caller.voice"))
         let session = AVAudioSession.sharedInstance()
-        // .playback: ook hoorbaar met de stille-modus-schakelaar aan. Andere audio wordt zachter gezet.
+        // .playback: ook hoorbaar met de stille-modus-schakelaar aan.
+        // .duckOthers: muziek wordt zachter, maar ALLEEN zolang de sessie actief is (= tijdens het spreken).
         try? session.setCategory(.playback, mode: .spokenAudio, options: [.duckOthers])
-        try? session.setActive(true)
+        synth.delegate = sessionKeeper
     }
 
     /// Beste stem voor een darts-caller: Britse mannenstem, Premium > Verbeterd > standaard.
@@ -180,6 +183,26 @@ final class CallerAudioManager {
         }
         utterance.voice = voice
         utterance.preUtteranceDelay = line.delay
+        try? AVAudioSession.sharedInstance().setActive(true)
         synth.speak(utterance)
+    }
+}
+
+/// Zet de audiosessie weer uit als de caller klaar is, zodat muziek van andere apps terug op volume komt.
+final class SpeechSessionKeeper: NSObject, AVSpeechSynthesizerDelegate {
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        release(synthesizer)
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        release(synthesizer)
+    }
+
+    private func release(_ synthesizer: AVSpeechSynthesizer) {
+        // Nog zinnen in de wachtrij? Dan aan laten (anders gaat de muziek tussen twee zinnen op en neer).
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+            guard !synthesizer.isSpeaking else { return }
+            try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        }
     }
 }

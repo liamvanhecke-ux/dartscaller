@@ -25,6 +25,13 @@ python tests\test_sandbox.py        # moet 8/8 geven
 | 6c. iPhone-augmentatie (motion blur, ruis, licht, JPEG) | `python augment.py --src dataset --dst dataset_aug --copies 2 --negatives negatieven` |
 | 7. Model verder trainen | `python ..\Training\train.py --data dataset_aug\data.yaml --epochs 30` |
 
+Logging & debug:
+```powershell
+python run.py --source opnames\sessie1.mov --session sessions\s1 --log debug --debug-visuals
+```
+Elke stap logt zijn beslissing (`[S1 BEWEGING]` … `[S7 SCORE]`, `[BASELINE]`), met de reden bij elke afkeuring.
+Met `--debug-visuals` komen per analyse `diff.png`, `shadow.png`, `new_edges.png` en `patch.png` (YOLO) in `sessions\s1\debug\`.
+
 Drempels aanpassen: maak `mijn_config.json`, bv. `{"min_elongation": 3.0, "cooldown_s": 0.8}`, en draai met `--config mijn_config.json`.
 
 ## Mappen

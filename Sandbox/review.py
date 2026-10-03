@@ -264,6 +264,10 @@ class ReviewUI:
         what = f"WORP  voorspeld: {meta['label']} ({meta['score']}) via {meta.get('source')}" if is_throw else \
                "GHOST genegeerd: " + ", ".join(meta.get("reasons", []))
         header = f"[{i + 1}/{n}] {what}" + (f"   (al beoordeeld: {done})" if done else "")
+        if meta.get("trace"):                                   # volledig beslisspoor in de console
+            print(f"\n── {folder.name} ──")
+            for line in meta["trace"]:
+                print("   " + line)
         keys = "j=juist  f=fout(klik)  t=fout(typ)  g=geen worp" if is_throw else \
                "j=terecht genegeerd  w=was worp(klik)  t=was worp(typ)"
         footer = keys + "   b=vorige  s=overslaan  q=stop"

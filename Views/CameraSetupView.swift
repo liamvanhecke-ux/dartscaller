@@ -323,6 +323,7 @@ struct CalibrationView: View {
                     if dragStart == nil {
                         dragStart = camera.calibrationPoints[i]
                         activeHandle = i
+                        camera.markEditedByHand()
                     }
                     guard let start = dragStart, fit.scale > 0 else { return }
                     let x = start.x + value.translation.width / fit.scale

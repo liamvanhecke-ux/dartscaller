@@ -9,12 +9,14 @@ final class TouchObserverRecognizer: UIGestureRecognizer, UIGestureRecognizerDel
     var onEnded: (() -> Void)?
     private var activeTouches = 0
 
-    init() {
-        super.init(target: nil, action: nil)
-        cancelsTouchesInView = false     // knoppen blijven gewoon werken
-        delaysTouchesBegan = false
-        delaysTouchesEnded = false
-        delegate = self
+    /// Geen eigen init (dat vraagt bij sommige SDK's een `init(coder:)`): instellen na het aanmaken.
+    static func make() -> TouchObserverRecognizer {
+        let r = TouchObserverRecognizer(target: nil, action: nil)
+        r.cancelsTouchesInView = false   // knoppen blijven gewoon werken
+        r.delaysTouchesBegan = false
+        r.delaysTouchesEnded = false
+        r.delegate = r
+        return r
     }
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent) {
@@ -64,7 +66,7 @@ struct TouchMonitor: UIViewRepresentable {
     }
 
     final class HostView: UIView {
-        let recognizer = TouchObserverRecognizer()
+        let recognizer = TouchObserverRecognizer.make()
         override func didMoveToWindow() {
             super.didMoveToWindow()
             recognizer.view?.removeGestureRecognizer(recognizer)

@@ -108,6 +108,7 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     func stopTracking() {
         queue.async {
             self.stage = .idle
+            self.pending = nil
             self.tracker.setMode(.off)
         }
     }
@@ -121,6 +122,8 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     func applyCalibration(_ cal: BoardCalibration) {
         queue.async {
             self.calibration = cal
+            self.pending = nil
+            self.dartsInBoardMM = []
             self.tracker.cameraSide = cal.cameraSideDirection
             self.tracker.setMode(.off)
             self.tracker.resetBaseline()
@@ -131,6 +134,7 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
     func setMode(_ mode: ThrowTracker.Mode, awaitingClear: Bool = false) {
         queue.async {
             self.tracker.setMode(mode, awaitingClear: awaitingClear)
+            if mode == .off { self.pending = nil }
             if !awaitingClear { self.dartsInBoardMM = [] }
         }
     }
@@ -287,7 +291,13 @@ final class DartVisionPipeline: NSObject, AVCaptureVideoDataOutputSampleBufferDe
         guard var p = pending, !pendingStartedThisFrame else { return }
         let crop = renderer.cgImage(image, rect: cal.roi, targetWidth: modelInputWidth)
         if p.capture == nil, let crop {
-            p.capture = FrameCapture(image: crop, roi: cal.roi, boardToImage: cal.toImage)
+            // mm → beeld in de HUIDIGE statiefpositie (kalibratie + blijvende verschuiving),
+            // zodat de trainingslabels exact op de foto vallen.
+            let (aw, _) = FrameRenderer.outputSize(for: cal.roi, targetWidth: analysisWidth)
+            let k = Double(cal.roi.width) / Double(aw)
+            let shift = Homography(matrix: [1, 0, Double(tracker.poseOffset.dx) * k,
+                                            0, 1, Double(tracker.poseOffset.dy) * k, 0, 0, 1])
+            p.capture = FrameCapture(image: crop, roi: cal.roi, boardToImage: shift.multiplied(by: cal.toImage))
         }
         guard detector != nil, let crop else {
             pending = p
