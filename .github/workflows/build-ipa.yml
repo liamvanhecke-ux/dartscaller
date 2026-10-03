@@ -1,0 +1,89 @@
+# Bouwt een onondertekende DartsCaller.ipa voor SideStore/AltStore.
+# Starten: GitHub › tab Actions › "Build IPA" › Run workflow.
+name: Build IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      model:
+        description: "AI-model in de app"
+        type: choice
+        default: meegeleverd
+        options:
+          - meegeleverd          # Models/DartsYOLO.mlpackage (dart-sense)
+          - scorelens-dd9        # beste op benchmark (huggingface.co/Bayernator/scorelens-dd9)
+          - scorelens-dd8        # beste bij board vinden / schuine hoek
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    runs-on: macos-15
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Nieuwste Xcode kiezen
+        uses: maxim-lobanov/setup-xcode@v1
+        with:
+          xcode-version: latest-stable
+
+      # ── Optioneel: ander (beter) model downloaden en naar Core ML omzetten ──────────
+      - name: Python voor modelconversie
+        if: ${{ github.event.inputs.model && github.event.inputs.model != 'meegeleverd' }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Model ${{ github.event.inputs.model }} downloaden en omzetten
+        if: ${{ github.event.inputs.model && github.event.inputs.model != 'meegeleverd' }}
+        run: |
+          set -e
+          pip install -q "torch==2.5.1" "torchvision==0.20.1" "ultralytics==8.3.40" "coremltools==8.1"
+          curl -fL -o best.pt "https://huggingface.co/Bayernator/${{ github.event.inputs.model }}/resolve/main/best.pt"
+          python - <<'PY'
+          from ultralytics import YOLO
+          m = YOLO("best.pt")
+          expected = {0: "20", 1: "3", 2: "11", 3: "6", 4: "dart", 5: "9", 6: "15"}
+          assert dict(m.names) == expected, f"Andere klassen dan de app verwacht: {m.names}"
+          path = m.export(format="coreml", nms=True, imgsz=800, conf=0.20, iou=0.65)
+          print("EXPORT:", path)
+          PY
+          rm -rf Models/DartsYOLO.mlpackage
+          mv best.mlpackage Models/DartsYOLO.mlpackage
+          echo "Model vervangen door ${{ github.event.inputs.model }} ✓"
+
+      - name: XcodeGen installeren en project maken
+        run: |
+          brew install xcodegen
+          xcodegen generate
+
+      - name: Bouwen (zonder handtekening)
+        run: |
+          set -o pipefail
+          xcodebuild -project DartsCaller.xcodeproj -scheme DartsCaller \
+            -configuration Release -sdk iphoneos -destination 'generic/platform=iOS' \
+            -derivedDataPath build \
+            CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            clean build | tee build.log
+
+      - name: Inpakken als .ipa
+        run: |
+          mkdir -p Payload
+          cp -R build/Build/Products/Release-iphoneos/DartsCaller.app Payload/
+          zip -qry DartsCaller.ipa Payload
+          unzip -l DartsCaller.ipa | grep -q "DartsYOLO.mlmodelc" && echo "AI-model zit erin ✓"
+
+      - name: .ipa uploaden
+        uses: actions/upload-artifact@v4
+        with:
+          name: DartsCaller-ipa
+          path: DartsCaller.ipa
+
+      - name: Buildlog bij fouten
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log
+          path: build.log
