@@ -36,6 +36,11 @@ final class TouchObserverRecognizer: UIGestureRecognizer, UIGestureRecognizerDel
     }
 
     override func reset() {
+        forceEnd()
+    }
+
+    /// Meld "losgelaten" als er nog een aanraking openstond (signaal onderweg verloren).
+    func forceEnd() {
         if activeTouches > 0 { onEnded?() }
         activeTouches = 0
     }
@@ -69,6 +74,7 @@ struct TouchMonitor: UIViewRepresentable {
         let recognizer = TouchObserverRecognizer.make()
         override func didMoveToWindow() {
             super.didMoveToWindow()
+            recognizer.forceEnd()                    // venster wisselt midden in een aanraking → afsluiten
             recognizer.view?.removeGestureRecognizer(recognizer)
             window?.addGestureRecognizer(recognizer)
         }

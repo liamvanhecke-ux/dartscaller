@@ -90,6 +90,9 @@ final class ThrowTracker {
         /// 60 fps: 12 ≈ 200 ms · 21 ≈ 350 ms (standaard) · 30 ≈ 500 ms.
         /// Trilt je statief langer na? Verhoog. Mis je pijlen vlak na een tik? Verlaag.
         var touchLockoutFrames = 21
+        /// Veiligheid: een aanraking telt maximaal zo lang (≈2 s). Gaat het "losgelaten"-signaal verloren
+        /// (bv. bij het sluiten van een sheet of menu), dan hangt de detectie nooit meer vast.
+        var maxTouchFrames = 120
 
         // ── [TRILLING 2] Globale beweging (statief) ───────────────────────────
         /// Grootste verschuiving (pixels in het bewegingsbeeld van ±160 px breed) die als
@@ -135,6 +138,7 @@ final class ThrowTracker {
 
     // [TRILLING 1] Aanraking actief / lockout loopt tot dit frame
     private var touchActive = false
+    private var touchStartFrame = 0
     private var lockoutUntilFrame = Int.min / 2
     // [TRILLING 2] Laatst gemeten statief-verschuiving (bewegingsbeeld) en de blijvende
     // verschuiving van het analysebeeld t.o.v. het moment van kalibratie.
@@ -148,7 +152,9 @@ final class ThrowTracker {
     var hasBaseline: Bool { emptyBoard != nil }
     var isPlayerAtBoard: Bool { if case .atBoard = state { return true }; return false }
     /// Staat de trillings-lockout nu aan? (voor de statusweergave)
-    var isInTouchLockout: Bool { touchActive || frame <= lockoutUntilFrame }
+    var isInTouchLockout: Bool {
+        (touchActive && frame - touchStartFrame < config.maxTouchFrames) || frame <= lockoutUntilFrame
+    }
 
     // MARK: Besturing (vanuit spel/coordinator)
 
@@ -194,11 +200,13 @@ final class ThrowTracker {
 
     // [TRILLING 1] Aanroepen vanuit de UI (TouchMonitor) bij elke aanraking van het scherm.
     func touchBegan() {
+        if !touchActive { touchStartFrame = frame }
         touchActive = true
         abortPendingMotion()
     }
 
     func touchEnded() {
+        guard touchActive else { return }          // dubbel gemeld (bv. na een correctie): niets verlengen
         touchActive = false
         lockoutUntilFrame = frame + config.touchLockoutFrames
     }
@@ -235,6 +243,9 @@ final class ThrowTracker {
         }
 
         // [TRILLING 1] Tijdens aanraking + lockout: beweging telt niet.
+        if touchActive && frame - touchStartFrame >= config.maxTouchFrames {
+            touchEnded()                           // "losgelaten" nooit ontvangen → zelf afsluiten
+        }
         let lockedOut = isInTouchLockout
         // [TRILLING 3] Een NIEUWE beweging starten gebeurt op het afgevlakte signaal (schokjes vallen weg);
         // "is het weer stil?" meten we op het echte frame, zodat de analyse niet later komt.

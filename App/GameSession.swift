@@ -174,6 +174,7 @@ final class GameSession {
 
     /// Volgende pijl handmatig invoeren.
     func registerManual(_ hit: DartHit) {
+        camera?.pipeline.touchEnded()
         guard engine.phase == .throwing else { return }
         engine.register(hit)
         if engine.phase == .throwing { camera?.pipeline.setDartsCounted(engine.turn.count) }
@@ -219,11 +220,13 @@ final class GameSession {
 
     /// "Beurt bevestigen": ontbrekende pijlen = mis.
     func confirmTurn() {
+        camera?.pipeline.touchEnded()
         engine.completeTurnWithMisses()
     }
 
     /// "Volgende speler" (als de camera het lege bord niet zelf ziet, of zonder camera).
     func nextPlayer() {
+        camera?.pipeline.touchEnded()
         guard engine.phase == .awaitingNext else { return }
         learning?.confirm(engine.records.last?.darts ?? [])
         engine.nextPlayer()
@@ -231,6 +234,9 @@ final class GameSession {
     }
 
     private func afterEdit(wasThrowing: Bool) {
+        // Correctie klaar = de speler raakt het scherm niet meer aan. Zeker zijn dat de touch-lockout
+        // stopt, ook als het "losgelaten"-signaal bij het sluiten van de sheet verloren ging.
+        camera?.pipeline.touchEnded()
         // Winnende pijl gecorrigeerd → leg loopt weer.
         if stage == .finished && engine.phase != .finished {
             stage = .playing
@@ -249,6 +255,7 @@ final class GameSession {
 
     /// "Klopt helemaal": camerabeeld + AI-posities → Positives/.
     func confirmFeedback() {
+        camera?.pipeline.touchEnded()
         guard let f = pendingFeedback else { return }
         let points = f.darts.compactMap { $0.isMiss ? nil : $0.boardPoint }
         learning?.saveTrainingTurn(capture: f.capture, dartsMM: points, verified: true)
@@ -270,7 +277,10 @@ final class GameSession {
         }
     }
 
-    func skipFeedback() { pendingFeedback = nil }
+    func skipFeedback() {
+        camera?.pipeline.touchEnded()
+        pendingFeedback = nil
+    }
 
     // MARK: - Bull-off
 

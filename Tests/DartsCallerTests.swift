@@ -879,6 +879,20 @@ final class ShakeFilterTests: XCTestCase {
     }
 
     /// Tijdens aanraking + lockout: ook een grote, lokale verandering (hand/schaduw van de arm) telt niet.
+    /// Bug uit de praktijk: na een correctie kwam het "losgelaten"-signaal soms niet → detectie hing vast.
+    func testLostTouchEndDoesNotBlockForever() {
+        let t = tracker()
+        t.touchBegan()                                   // touchEnded komt nooit
+        XCTAssertTrue(feed(t, board, 60).isEmpty)
+        XCTAssertTrue(t.isInTouchLockout, "eerst nog geblokkeerd")
+        XCTAssertTrue(feed(t, board, 90).isEmpty)        // > 2 s + lockout
+        XCTAssertFalse(t.isInTouchLockout, "na max. 2 s automatisch vrij")
+        let ev = feed(t, dart(on: board, tip: (120, 150)), 14)
+        XCTAssertEqual(ev.filter { if case .dart = $0 { return true }; return false }.count, 1, "pijl wordt weer herkend")
+        t.touchEnded(); t.touchEnded()                    // dubbel gemeld: geen nieuwe lockout
+        XCTAssertFalse(t.isInTouchLockout)
+    }
+
     func testTouchLockout() {
         let t = tracker()
         t.touchBegan()
